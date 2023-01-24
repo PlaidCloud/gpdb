@@ -7,7 +7,7 @@ jobs:
   build-greenplum-image:
     name: Greenplum OSS Image Build
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 120
     steps:
       - name: Create tag
         id: docker_tag
