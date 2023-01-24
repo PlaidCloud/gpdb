@@ -1,7 +1,8 @@
 FROM ubuntu:18.04
 
-COPY greenplum-oss/sysconf.bash /gpdb_src/sysconf.bash
-COPY concourse/ /gpdb_src/concourse/
+COPY ./ /gpdb_src/
+# COPY greenplum-oss/sysconf.bash /gpdb_src/sysconf.bash
+# COPY concourse/ /gpdb_src/concourse/
 
 WORKDIR /
 
@@ -9,11 +10,19 @@ RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
 && ldconfig
 
 RUN export DEBIAN_FRONTEND=noninteractive \
-&& chmod +x gpdb_src/sysconf.bash \
-&& gpdb_src/sysconf.bash
+&& chmod +x gpdb_src/greenplum-oss/sysconf.bash \
+&& gpdb_src/greenplum-oss/sysconf.bash
 
 RUN chmod +x gpdb_src/concourse/scripts/setup_gpadmin_user.bash \
 && gpdb_src/concourse/scripts/setup_gpadmin_user.bash
+
+WORKDIR /gpdb_src
+
+# Configure build environment to install at /usr/local/gpdb
+RUN ./configure --with-perl --with-python --with-libxml --with-gssapi --prefix=/usr/local/gpdb \
+&& make -j8 \
+&& make -j8 install \
+&& source /usr/local/gpdb/greenplum_path.sh
 
 # RUN export DEBIAN_FRONTEND=noninteractive \
 # && echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
