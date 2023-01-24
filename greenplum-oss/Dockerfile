@@ -9,6 +9,7 @@ RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
 && ldconfig
 
 RUN export DEBIAN_FRONTEND=noninteractive \
+&& chmod +x sysconf.bash \
 && ./sysconf.bash
 
 RUN chmod +x concourse/scripts/setup_gpadmin_user.bash \
