@@ -2,7 +2,7 @@ name: Build OSS Greenplum Ubuntu Image
 on:
   push:
     branches:
-      - build*
+      - build-gpdb
 jobs:
   build-greenplum-image:
     name: Greenplum OSS Image Build
