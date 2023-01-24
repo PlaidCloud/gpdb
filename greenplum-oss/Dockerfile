@@ -5,12 +5,12 @@ COPY ./ /gpdb_src/
 # COPY concourse/ /gpdb_src/concourse/
 
 WORKDIR /
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
 && ldconfig
 
-RUN export DEBIAN_FRONTEND=noninteractive \
-&& chmod +x gpdb_src/greenplum-oss/sysconf.bash \
+RUN chmod +x gpdb_src/greenplum-oss/sysconf.bash \
 && gpdb_src/greenplum-oss/sysconf.bash
 
 RUN chmod +x gpdb_src/concourse/scripts/setup_gpadmin_user.bash \
