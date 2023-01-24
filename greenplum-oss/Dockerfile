@@ -9,8 +9,8 @@ RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
 && ldconfig
 
 RUN export DEBIAN_FRONTEND=noninteractive \
-&& chmod +x sysconf.bash \
-&& ./sysconf.bash
+&& chmod +x gpdb_src/sysconf.bash \
+&& gpdb_src/sysconf.bash
 
 RUN chmod +x gpdb_src/concourse/scripts/setup_gpadmin_user.bash \
 && gpdb_src/concourse/scripts/setup_gpadmin_user.bash
