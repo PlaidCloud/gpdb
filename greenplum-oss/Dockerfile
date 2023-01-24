@@ -21,8 +21,7 @@ WORKDIR /gpdb_src
 # Configure build environment to install at /usr/local/gpdb
 RUN ./configure --with-perl --with-python --with-libxml --with-gssapi --prefix=/usr/local/gpdb \
 && make -j8 \
-&& make -j8 install \
-&& source /usr/local/gpdb/greenplum_path.sh
+&& make -j8 install
 
 # RUN export DEBIAN_FRONTEND=noninteractive \
 # && echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
