@@ -19,7 +19,7 @@ RUN chmod +x gpdb_src/concourse/scripts/setup_gpadmin_user.bash \
 
 WORKDIR /gpdb_src
 
-RUN python -v
+RUN python3 -v
 
 # Configure build environment to install at /usr/local/gpdb
 RUN ./configure --with-perl --with-python --with-libxml --with-gssapi --prefix=/usr/local/gpdb \
