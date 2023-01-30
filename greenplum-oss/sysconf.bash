@@ -43,7 +43,7 @@ apt-get install -y \
 	# python3-psutil \
 	# python3-pygresql \
 	# python3-yaml \
-        xerces-c
+        # xerces-c
 	zlib1g-dev
 
 tee -a /etc/sysctl.conf << EOF
