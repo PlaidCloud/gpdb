@@ -33,11 +33,16 @@ apt-get install -y \
 	openssh-server \
 	openssl \
 	pkg-config \
-	python3-dev \
-	python3-pip \
-	python3-psutil \
-	python3-pygresql \
-	python3-yaml \
+        python \
+        python-pip \
+        python-psutil \
+        python-pygresql \
+        python-yaml
+	# python3-dev \
+	# python3-pip \
+	# python3-psutil \
+	# python3-pygresql \
+	# python3-yaml \
 	zlib1g-dev
 
 tee -a /etc/sysctl.conf << EOF
