@@ -1408,7 +1408,7 @@ STOP_QD_PRODUCTION () {
         GPSTOP_OPTS=$(OUTPUT_LEVEL_OPTS)
         export COORDINATOR_DATA_DIRECTORY=${COORDINATOR_DIRECTORY}/${SEG_PREFIX}-1
         LOG_MSG "[INFO]: USER: $USER"
-        LOG_MSG "[INFO]: which python3: ${which python3}"
+        LOG_MSG "[INFO]: which python3: $(which python3)"
         LOG_MSG "[INFO]: pythonpath: $PYTHONPATH"
         LOG_MSG "[INFO]: pythonhome: $PYTHONHOME"
         LOG_MSG "[INFO]: $GPSTOP -a -l $LOG_DIR -m -d $COORDINATOR_DATA_DIRECTORY $GPSTOP_OPTS"
