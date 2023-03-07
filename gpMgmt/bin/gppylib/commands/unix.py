@@ -518,6 +518,8 @@ class Rsync(Command):
         if recursive:
             cmdStr = cmdStr + "-r "
 
+        cmdStr = cmdStr + '-e "ssh -o StrictHostKeyChecking=no" '
+
         if srcHost:
             cmdStr = cmdStr + canonicalize(srcHost) + ":"
         cmdStr = cmdStr + srcFile + " "
