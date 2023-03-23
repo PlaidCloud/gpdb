@@ -49,9 +49,8 @@ void
 InsertAppendOnlyEntry(Oid relid,
 					  Oid segrelid,
 					  Oid blkdirrelid,
-					  Oid blkdiridxid,
 					  Oid visimaprelid,
-					  Oid visimapidxid)
+					  int16 version)
 {
 	Relation	pg_appendonly_rel;
 	HeapTuple	pg_appendonly_tuple = NULL;
@@ -71,9 +70,8 @@ InsertAppendOnlyEntry(Oid relid,
 	values[Anum_pg_appendonly_relid - 1] = ObjectIdGetDatum(relid);
 	values[Anum_pg_appendonly_segrelid - 1] = ObjectIdGetDatum(segrelid);
 	values[Anum_pg_appendonly_blkdirrelid - 1] = ObjectIdGetDatum(blkdirrelid);
-	values[Anum_pg_appendonly_blkdiridxid - 1] = ObjectIdGetDatum(blkdiridxid);
 	values[Anum_pg_appendonly_visimaprelid - 1] = ObjectIdGetDatum(visimaprelid);
-	values[Anum_pg_appendonly_visimapidxid - 1] = ObjectIdGetDatum(visimapidxid);
+	values[Anum_pg_appendonly_version - 1] = Int16GetDatum(version);
 
 	/*
 	 * form the tuple and insert it
@@ -151,48 +149,16 @@ GetAppendOnlyEntryAttributes(Oid relid,
  *
  * The OIDs will be retrieved only when the corresponding output variable is
  * not NULL.
- *
- * 'appendOnlyMetaDataSnapshot' can be passed as NULL, which means use the
- * latest snapshot, like in systable_beginscan.
  */
 void
-GetAppendOnlyEntryAuxOids(Oid relid,
-						  Snapshot appendOnlyMetaDataSnapshot,
+GetAppendOnlyEntryAuxOids(Relation rel,
 						  Oid *segrelid,
 						  Oid *blkdirrelid,
-						  Oid *blkdiridxid,
-						  Oid *visimaprelid,
-						  Oid *visimapidxid)
+						  Oid *visimaprelid)
 {
-	Relation	pg_appendonly;
-	TupleDesc	tupDesc;
-	ScanKeyData key[1];
-	SysScanDesc scan;
-	HeapTuple	tuple;
 	Form_pg_appendonly	aoForm;
 
-	/*
-	 * Check the pg_appendonly relation to be certain the ao table
-	 * is there.
-	 */
-	pg_appendonly = table_open(AppendOnlyRelationId, AccessShareLock);
-	tupDesc = RelationGetDescr(pg_appendonly);
-
-	ScanKeyInit(&key[0],
-				Anum_pg_appendonly_relid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(relid));
-
-	scan = systable_beginscan(pg_appendonly, AppendOnlyRelidIndexId, true,
-							  appendOnlyMetaDataSnapshot, 1, key);
-	tuple = systable_getnext(scan);
-	if (!HeapTupleIsValid(tuple))
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("missing pg_appendonly entry for relation \"%s\"",
-						get_rel_name(relid))));
-
-	aoForm = (Form_pg_appendonly) GETSTRUCT(tuple);
+	aoForm = rel->rd_appendonly;
 
 	if (segrelid != NULL)
 		*segrelid = aoForm->segrelid;
@@ -200,57 +166,17 @@ GetAppendOnlyEntryAuxOids(Oid relid,
 	if (blkdirrelid != NULL)
 		*blkdirrelid = aoForm->blkdirrelid;
 
-	if (blkdiridxid != NULL)
-		*blkdiridxid = aoForm->blkdiridxid;
-
 	if (visimaprelid != NULL)
 		*visimaprelid = aoForm->visimaprelid;
-
-	if (visimapidxid != NULL)
-		*visimapidxid = aoForm->visimapidxid;
-
-	/* Finish up scan and close pg_appendonly catalog. */
-	systable_endscan(scan);
-	table_close(pg_appendonly, AccessShareLock);
 }
 
 void
-GetAppendOnlyEntry(Oid relid, Form_pg_appendonly aoEntry)
+GetAppendOnlyEntry(Relation rel, Form_pg_appendonly aoEntry)
 {
-	Relation	pg_appendonly;
-	TupleDesc	tupDesc;
-	ScanKeyData key[1];
-	SysScanDesc scan;
-	HeapTuple	tuple;
 	Form_pg_appendonly	aoForm;
 
-	/*
-	 * Check the pg_appendonly relation to be certain the ao table
-	 * is there.
-	 */
-	pg_appendonly = table_open(AppendOnlyRelationId, AccessShareLock);
-	tupDesc = RelationGetDescr(pg_appendonly);
-
-	ScanKeyInit(&key[0],
-				Anum_pg_appendonly_relid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(relid));
-
-	scan = systable_beginscan(pg_appendonly, AppendOnlyRelidIndexId, true,
-							  NULL, 1, key);
-	tuple = systable_getnext(scan);
-	if (!HeapTupleIsValid(tuple))
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_OBJECT),
-				 errmsg("missing pg_appendonly entry for relation \"%s\"",
-						get_rel_name(relid))));
-
-	aoForm = (Form_pg_appendonly) GETSTRUCT(tuple);
+	aoForm = rel->rd_appendonly;
 	memcpy(aoEntry, aoForm, APPENDONLY_TUPLE_SIZE);
-
-	/* Finish up scan and close pg_appendonly catalog. */
-	systable_endscan(scan);
-	table_close(pg_appendonly, AccessShareLock);
 }
 
 /*
@@ -261,9 +187,7 @@ void
 UpdateAppendOnlyEntryAuxOids(Oid relid,
 							 Oid newSegrelid,
 							 Oid newBlkdirrelid,
-							 Oid newBlkdiridxid,
-							 Oid newVisimaprelid,
-							 Oid newVisimapidxid)
+							 Oid newVisimaprelid)
 {
 	Relation	pg_appendonly;
 	ScanKeyData key[1];
@@ -309,23 +233,12 @@ UpdateAppendOnlyEntryAuxOids(Oid relid,
 		newValues[Anum_pg_appendonly_blkdirrelid - 1] = newBlkdirrelid;
 	}
 	
-	if (OidIsValid(newBlkdiridxid))
-	{
-		replace[Anum_pg_appendonly_blkdiridxid - 1] = true;
-		newValues[Anum_pg_appendonly_blkdiridxid - 1] = newBlkdiridxid;
-	}
-	
 	if (OidIsValid(newVisimaprelid))
 	{
 		replace[Anum_pg_appendonly_visimaprelid - 1] = true;
 		newValues[Anum_pg_appendonly_visimaprelid - 1] = newVisimaprelid;
 	}
 	
-	if (OidIsValid(newVisimapidxid))
-	{
-		replace[Anum_pg_appendonly_visimapidxid - 1] = true;
-		newValues[Anum_pg_appendonly_visimapidxid - 1] = newVisimapidxid;
-	}
 	newTuple = heap_modify_tuple(tuple, RelationGetDescr(pg_appendonly),
 								 newValues, newNulls, replace);
 	CatalogTupleUpdate(pg_appendonly, &newTuple->t_self, newTuple);

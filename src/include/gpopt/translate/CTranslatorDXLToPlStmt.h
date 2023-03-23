@@ -351,6 +351,14 @@ private:
 			ctxt_translation_prev_siblings	// translation contexts of previous siblings
 	);
 
+	// translate a dynamic foreign scan operator
+	Plan *TranslateDXLDynForeignScan(
+		const CDXLNode *dyn_foreign_scan_dxlnode,
+		CDXLTranslateContext *output_context,
+		CDXLTranslationContextArray *
+			ctxt_translation_prev_siblings	// translation contexts of previous siblings
+	);
+
 	// translate a DML operator
 	Plan *TranslateDXLDml(
 		const CDXLNode *dml_dxlnode, CDXLTranslateContext *output_context,
@@ -429,9 +437,9 @@ private:
 		CDXLTranslateContextBaseTable *base_table_context);
 
 	// create range table entry from a table descriptor
-	RangeTblEntry *TranslateDXLTblDescrToRangeTblEntry(
-		const CDXLTableDescr *table_descr, Index index,
-		CDXLTranslateContextBaseTable *base_table_context);
+	Index ProcessDXLTblDescr(const CDXLTableDescr *table_descr,
+							 CDXLTranslateContextBaseTable *base_table_context,
+							 AclMode acl_mode);
 
 	// translate DXL projection list into a target list
 	List *TranslateDXLProjList(

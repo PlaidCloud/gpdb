@@ -38,6 +38,7 @@
 #include "gpopt/operators/CPhysicalCorrelatedLeftOuterNLJoin.h"
 #include "gpopt/operators/CPhysicalDML.h"
 #include "gpopt/operators/CPhysicalDynamicBitmapTableScan.h"
+#include "gpopt/operators/CPhysicalDynamicForeignScan.h"
 #include "gpopt/operators/CPhysicalDynamicIndexScan.h"
 #include "gpopt/operators/CPhysicalDynamicTableScan.h"
 #include "gpopt/operators/CPhysicalHashAgg.h"
@@ -101,6 +102,7 @@
 #include "naucrates/dxl/operators/CDXLPhysicalCTEConsumer.h"
 #include "naucrates/dxl/operators/CDXLPhysicalCTEProducer.h"
 #include "naucrates/dxl/operators/CDXLPhysicalDynamicBitmapTableScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalDynamicForeignScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalDynamicIndexScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalDynamicTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalForeignScan.h"
@@ -157,9 +159,6 @@
 #include "naucrates/dxl/operators/CDXLScalarOneTimeFilter.h"
 #include "naucrates/dxl/operators/CDXLScalarOpExpr.h"
 #include "naucrates/dxl/operators/CDXLScalarOpList.h"
-#include "naucrates/dxl/operators/CDXLScalarPartBound.h"
-#include "naucrates/dxl/operators/CDXLScalarPartDefault.h"
-#include "naucrates/dxl/operators/CDXLScalarPartListNullTest.h"
 #include "naucrates/dxl/operators/CDXLScalarProjElem.h"
 #include "naucrates/dxl/operators/CDXLScalarProjList.h"
 #include "naucrates/dxl/operators/CDXLScalarRecheckCondFilter.h"
@@ -471,6 +470,11 @@ CTranslatorExprToDXL::CreateDXLNode(CExpression *pexpr,
 			break;
 		case COperator::EopPhysicalDynamicIndexScan:
 			dxlnode = CTranslatorExprToDXL::PdxlnDynamicIndexScan(
+				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
+				pfDML);
+			break;
+		case COperator::EopPhysicalDynamicForeignScan:
+			dxlnode = CTranslatorExprToDXL::PdxlnDynamicForeignScan(
 				pexpr, colref_array, pdrgpdsBaseTables, pulNonGatherMotions,
 				pfDML);
 			break;
@@ -1250,7 +1254,8 @@ CTranslatorExprToDXL::MakeTableDescForPart(const IMDRelation *part,
 		m_mp, part_mdid, part->Mdname().GetMDName(),
 		part->ConvertHashToRandom(), part->GetRelDistribution(),
 		part->RetrieveRelStorageType(), root_table_desc->GetExecuteAsUserId(),
-		root_table_desc->LockMode());
+		root_table_desc->LockMode(),
+		root_table_desc->GetAssignedQueryIdForTargetRel());
 
 	for (ULONG ul = 0; ul < part->ColumnCount(); ++ul)
 	{
@@ -1360,7 +1365,7 @@ CTranslatorExprToDXL::PdxlnDynamicTableScan(
 	{
 		const CBitSet *bs = pps_reqd->SelectorIds(popDTS->ScanId());
 		CBitSetIter bsi(*bs);
-		for (ULONG ul = 0; bsi.Advance(); ul++)
+		while (bsi.Advance())
 		{
 			selector_ids->Append(GPOS_NEW(m_mp) ULONG(bsi.Bit()));
 		}
@@ -1460,7 +1465,7 @@ CTranslatorExprToDXL::PdxlnDynamicBitmapTableScan(
 	{
 		const CBitSet *bs = pps_reqd->SelectorIds(pop->ScanId());
 		CBitSetIter bsi(*bs);
-		for (ULONG ul = 0; bsi.Advance(); ul++)
+		while (bsi.Advance())
 		{
 			selector_ids->Append(GPOS_NEW(m_mp) ULONG(bsi.Bit()));
 		}
@@ -1563,7 +1568,7 @@ CTranslatorExprToDXL::PdxlnDynamicIndexScan(
 	{
 		const CBitSet *bs = pps_reqd->SelectorIds(popDIS->ScanId());
 		CBitSetIter bsi(*bs);
-		for (ULONG ul = 0; bsi.Advance(); ul++)
+		while (bsi.Advance())
 		{
 			selector_ids->Append(GPOS_NEW(m_mp) ULONG(bsi.Bit()));
 		}
@@ -1651,7 +1656,118 @@ CTranslatorExprToDXL::PdxlnDynamicIndexScan(
 								 pexprDIS->Prpp());
 }
 
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorExprToDXL::PdxlnDynamicForeignScan
+//
+//	@doc:
+//		Create a DXL dynamic foreign table scan node from an optimizer
+//		dynamic foreign table scan node.
+//
+//---------------------------------------------------------------------------
+CDXLNode *
+CTranslatorExprToDXL::PdxlnDynamicForeignScan(
+	CExpression *pexprDFS, CColRefArray *colref_array,
+	CDistributionSpecArray *pdrgpdsBaseTables,
+	ULONG *,  // pulNonGatherMotions,
+	BOOL *	  // pfDML
+)
+{
+	CExpression *pexprScalarCond = nullptr;
+	CDXLPhysicalProperties *dxl_properties = nullptr;
+	return PdxlnDynamicForeignScan(pexprDFS, colref_array, pdrgpdsBaseTables,
+								   pexprScalarCond, dxl_properties);
+}
 
+// Translate CPhysicalDynamicForeignScan node.
+// This creates a dynamic foreign scan node similar to creating a dynamic seq scan.
+CDXLNode *
+CTranslatorExprToDXL::PdxlnDynamicForeignScan(
+	CExpression *pexprDFS, CColRefArray *colref_array,
+	CDistributionSpecArray *pdrgpdsBaseTables, CExpression *pexprScalarCond,
+	CDXLPhysicalProperties *dxl_properties)
+{
+	GPOS_ASSERT(nullptr != pexprDFS);
+	GPOS_ASSERT_IFF(nullptr != pexprScalarCond, nullptr != dxl_properties);
+
+	CPhysicalDynamicForeignScan *popDFS =
+		CPhysicalDynamicForeignScan::PopConvert(pexprDFS->Pop());
+	CColRefArray *pdrgpcrOutput = popDFS->PdrgpcrOutput();
+
+	// translate table descriptor
+	CDXLTableDescr *table_descr =
+		MakeDXLTableDescr(popDFS->Ptabdesc(), pdrgpcrOutput, pexprDFS->Prpp());
+
+	// construct plan costs
+	CDXLPhysicalProperties *pdxlpropDFS = GetProperties(pexprDFS);
+
+	if (nullptr != dxl_properties)
+	{
+		CWStringDynamic *rows_out_str = GPOS_NEW(m_mp) CWStringDynamic(
+			m_mp,
+			dxl_properties->GetDXLOperatorCost()->GetRowsOutStr()->GetBuffer());
+		CWStringDynamic *pstrCost = GPOS_NEW(m_mp)
+			CWStringDynamic(m_mp, dxl_properties->GetDXLOperatorCost()
+									  ->GetTotalCostStr()
+									  ->GetBuffer());
+
+		pdxlpropDFS->GetDXLOperatorCost()->SetRows(rows_out_str);
+		pdxlpropDFS->GetDXLOperatorCost()->SetCost(pstrCost);
+		dxl_properties->Release();
+	}
+
+	IMdIdArray *part_mdids = popDFS->GetPartitionMdids();
+	part_mdids->AddRef();
+
+	// populate selector ids for dynamic partition elimination
+	ULongPtrArray *selector_ids = GPOS_NEW(m_mp) ULongPtrArray(m_mp);
+	CPartitionPropagationSpec *pps_reqd =
+		pexprDFS->Prpp()->Pepp()->PppsRequired();
+	if (pps_reqd->Contains(popDFS->ScanId()))
+	{
+		const CBitSet *bs = pps_reqd->SelectorIds(popDFS->ScanId());
+		CBitSetIter bsi(*bs);
+		for (ULONG ul = 0; bsi.Advance(); ul++)
+		{
+			selector_ids->Append(GPOS_NEW(m_mp) ULONG(bsi.Bit()));
+		}
+	}
+
+
+	CDXLPhysicalDynamicForeignScan *pdxlopDFS = GPOS_NEW(m_mp)
+		CDXLPhysicalDynamicForeignScan(m_mp, table_descr, part_mdids,
+									   selector_ids,
+									   popDFS->GetForeignServerOid());
+
+	CDXLNode *pdxlnDFS = GPOS_NEW(m_mp) CDXLNode(m_mp, pdxlopDFS);
+	pdxlnDFS->SetProperties(pdxlpropDFS);
+
+	CDXLNode *pdxlnCond = nullptr;
+
+	if (nullptr != pexprScalarCond)
+	{
+		pdxlnCond = PdxlnScalar(pexprScalarCond);
+	}
+
+	CDXLNode *filter_dxlnode = PdxlnFilter(pdxlnCond);
+
+	// construct projection list
+	GPOS_ASSERT(nullptr != pexprDFS->Prpp());
+
+	CColRefSet *pcrsOutput = pexprDFS->Prpp()->PcrsRequired();
+	pdxlnDFS->AddChild(PdxlnProjList(pcrsOutput, colref_array));
+	pdxlnDFS->AddChild(filter_dxlnode);
+
+#ifdef GPOS_DEBUG
+	pdxlnDFS->GetOperator()->AssertValid(pdxlnDFS, false);
+#endif
+
+	CDistributionSpec *pds = pexprDFS->GetDrvdPropPlan()->Pds();
+	pds->AddRef();
+	pdrgpdsBaseTables->Append(pds);
+
+	return pdxlnDFS;
+}
 //---------------------------------------------------------------------------
 //	@function:
 //		CTranslatorExprToDXL::PdxlnResult
@@ -1948,6 +2064,15 @@ CTranslatorExprToDXL::PdxlnFromFilter(CExpression *pexprFilter,
 			return PdxlnDynamicTableScan(pexprRelational, colref_array,
 										 pdrgpdsBaseTables, pexprScalar,
 										 dxl_properties);
+		}
+		case COperator::EopPhysicalDynamicForeignScan:
+		{
+			dxl_properties->AddRef();
+
+			// inline condition in the Dynamic Foreign Scan Scan
+			return PdxlnDynamicForeignScan(pexprRelational, colref_array,
+										   pdrgpdsBaseTables, pexprScalar,
+										   dxl_properties);
 		}
 		case COperator::EopPhysicalIndexOnlyScan:
 		case COperator::EopPhysicalIndexScan:
@@ -3916,6 +4041,8 @@ UlIndexFilter(Edxlopid edxlopid)
 		case EdxlopPhysicalTableScan:
 		case EdxlopPhysicalForeignScan:
 			return EdxltsIndexFilter;
+		case EdxlopPhysicalDynamicForeignScan:
+			return EdxldfsIndexFilter;
 		case EdxlopPhysicalBitmapTableScan:
 		case EdxlopPhysicalDynamicBitmapTableScan:
 			return EdxlbsIndexFilter;
@@ -4826,7 +4953,7 @@ CTranslatorExprToDXL::PdxlnPartitionSelector(
 	GPOS_ASSERT(nullptr != bs);
 	ULongPtrArray *parts = GPOS_NEW(m_mp) ULongPtrArray(m_mp);
 	CBitSetIter bsi(*bs);
-	for (ULONG ul = 0; bsi.Advance(); ul++)
+	while (bsi.Advance())
 	{
 		parts->Append(GPOS_NEW(m_mp) ULONG(bsi.Bit()));
 	}
@@ -6580,9 +6707,9 @@ CTranslatorExprToDXL::MakeDXLTableDescr(
 	CMDIdGPDB *mdid = CMDIdGPDB::CastMdid(ptabdesc->MDId());
 	mdid->AddRef();
 
-	CDXLTableDescr *table_descr = GPOS_NEW(m_mp)
-		CDXLTableDescr(m_mp, mdid, pmdnameTbl, ptabdesc->GetExecuteAsUserId(),
-					   ptabdesc->LockMode());
+	CDXLTableDescr *table_descr = GPOS_NEW(m_mp) CDXLTableDescr(
+		m_mp, mdid, pmdnameTbl, ptabdesc->GetExecuteAsUserId(),
+		ptabdesc->LockMode(), ptabdesc->GetAssignedQueryIdForTargetRel());
 
 	const ULONG ulColumns = ptabdesc->ColumnCount();
 	// translate col descriptors

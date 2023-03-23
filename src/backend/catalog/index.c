@@ -3040,11 +3040,11 @@ index_build(Relation heapRelation,
 									  RelationGetRelid(indexRelation));
 
 	/*
-	 * GPDB_12_MERGE_FIXME: Parallel CREATE INDEX temporarily disabled.
-	 * In the 'partition_prune' regression test, the parallel worker
-	 * blocked waiting for the main process. I believe there's something
-	 * broken in the lock manager in GPDB with parallel workers. Need
-	 * figure that out first.
+	 * GPDB_12_MERGE_FEATURE_NOT_SUPPORTED: Parallel CREATE INDEX temporarily
+	 * disabled.  In the 'partition_prune' regression test, the parallel
+	 * worker blocked waiting for the main process. I believe there's
+	 * something broken in the lock manager in GPDB with parallel
+	 * workers. Need figure that out first.
 	 */
 	indexInfo->ii_ParallelWorkers = 0;
 
@@ -4030,6 +4030,16 @@ reindex_relation(Oid relid, int flags, int options)
 		i++;
 	}
 
+	/* 
+	 * While we have the relation opened, obtain the aoseg_relid and 
+	 * aoblkdir_relid if it is an AO table.
+	 */
+	if ((flags & REINDEX_REL_PROCESS_TOAST) && relIsAO)
+		GetAppendOnlyEntryAuxOids(rel,
+								  &aoseg_relid,
+								  &aoblkdir_relid,
+								  &aovisimap_relid);
+
 	/*
 	 * Close rel, but continue to hold the lock.
 	 */
@@ -4045,13 +4055,6 @@ reindex_relation(Oid relid, int flags, int options)
 	 */
 	if ((flags & REINDEX_REL_PROCESS_TOAST) && OidIsValid(toast_relid))
 		result |= reindex_relation(toast_relid, flags, options);
-
-	/* Obtain the aoseg_relid and aoblkdir_relid if the relation is an AO table. */
-	if ((flags & REINDEX_REL_PROCESS_TOAST) && relIsAO)
-		GetAppendOnlyEntryAuxOids(relid, NULL,
-								  &aoseg_relid,
-								  &aoblkdir_relid, NULL,
-								  &aovisimap_relid, NULL);
 
 	/*
 	 * If an AO rel has a secondary segment list rel, reindex that too while we

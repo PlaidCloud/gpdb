@@ -226,6 +226,20 @@ Control the query plan execution.
 - [gp_max_slices](guc-list.html#gp_max_slices)
 - [plan_cache_mode](guc-list.html#plan_cache_mode)
 
+### <a id="topic_jit"></a>JIT Configuration Parameters
+
+- [gp_explain_jit](guc-list.html#gp_explain_jit)
+- [jit](guc-list.html#jit)
+- [jit_above_cost](guc-list.html#jit_above_cost)
+- [jit_debugging_support](guc-list.html#jit_debugging_support)
+- [jit_dump_bitcode](guc-list.html#jit_dump_bitcode)
+- [jit_expressions](guc-list.html#jit_expressions)
+- [jit_inline_above_cost](guc-list.html#jit_inline_above_cost)
+- [jit_optimize_above_cost](guc-list.html#jit_optimize_above_cost)
+- [jit_profiling_support](guc-list.html#jit_profiling_support)
+- [jit_provider](guc-list.html#jit_provider)
+- [jit_tuple_deforming](guc-list.html#jit_tuple_deforming)
+
 ## <a id="topic29"></a>Error Reporting and Logging Parameters 
 
 These configuration parameters control Greenplum Database logging.
@@ -320,8 +334,10 @@ These configuration parameters set defaults that are used for client connections
 - [default_transaction_deferrable](guc-list.html#default_transaction_deferrable)
 - [default_transaction_isolation](guc-list.html#default_transaction_isolation)
 - [default_transaction_read_only](guc-list.html)[search_path](guc-list.html#default_transaction_read_only](guc-list.html)[search_path)
+- [gin_pending_list_limit](guc-list.html#gin_pending_list_limit)
 - [statement_timeout](guc-list.html#statement_timeout)
 - [temp_tablespaces](guc-list.html#temp_tablespaces)
+- [vacuum_cleanup_index_scale_factor](guc-list.html#vacuum_cleanup_index_scale_factor)
 - [vacuum_freeze_min_age](guc-list.html#vacuum_freeze_min_age)
 
 ### <a id="topic41"></a>Locale and Formatting Parameters 
@@ -381,6 +397,7 @@ The following parameters configure the Greenplum Database resource group workloa
 - [gp_resgroup_memory_policy](guc-list.html#gp_resgroup_memory_policy)
 - [gp_resource_group_bypass](guc-list.html) [gp_resource_group_cpu_ceiling_enforcement](guc-list.html#gp_resource_group_bypass](guc-list.html) [gp_resource_group_cpu_ceiling_enforcement)
 - [gp_resource_group_cpu_limit](guc-list.html#gp_resource_group_cpu_limit)
+- [gp_resource_group_cpu_priority](guc-list.html#gp_resource_group_cpu_priority)
 - [gp_resource_group_enable_recalculate_query_mem](guc-list.html#gp_resource_group_enable_recalculate_query_mem)
 - [gp_resource_group_memory_limit](guc-list.html#gp_resource_group_memory_limit)
 - [gp_resource_group_queuing_timeout](guc-list.html#gp_resource_group_queuing_timeout)

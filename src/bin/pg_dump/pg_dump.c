@@ -6915,6 +6915,7 @@ getAOTableInfo(Archive *fout)
 	int			i_visimaprelid;
 	int			i_visimapreltype;
 	int			i_visimapidxid;
+	int			i_columnstore;
 
 	resetPQExpBuffer(query);
 
@@ -6923,14 +6924,26 @@ getAOTableInfo(Archive *fout)
 						"ao.relid,"
 						"ao.segrelid, t1.reltype as segreltype, "
 						"ao.blkdirrelid, t3.reltype as blkdirreltype, "
-						"ao.blkdiridxid, "
+						"i1.indexrelid as blkdiridxid, "
 						"ao.visimaprelid, t2.reltype as visimapreltype, "
-						"ao.visimapidxid "
+						"i2.indexrelid as visimapidxid, ");
+
+	/* For AO tables on GPDB5/6, amname is derived from pg_appendonly.columnstore */
+	if (fout->remoteVersion < GPDB7_MAJOR_PGVERSION)
+		appendPQExpBufferStr(query,
+						"ao.columnstore");
+	else
+		appendPQExpBufferStr(query,
+						"NULL as columnstore");
+
+	appendPQExpBufferStr(query,
 						"\nFROM pg_catalog.pg_appendonly ao\n"
 						"LEFT JOIN pg_class c ON (c.oid=ao.relid)\n"
 						"LEFT JOIN pg_class t1 ON (t1.oid=ao.segrelid)\n"
 						"LEFT JOIN pg_class t2 ON (t2.oid=ao.visimaprelid)\n"
 						"LEFT JOIN pg_class t3 ON (t3.oid=ao.blkdirrelid and ao.blkdirrelid <> 0)\n"
+						"LEFT JOIN pg_index i1 ON (i1.indrelid=ao.blkdirrelid)\n"
+						"LEFT JOIN pg_index i2 ON (i2.indrelid=ao.visimaprelid)\n"
 						"LEFT JOIN pg_am am ON (am.oid=c.relam)\n"
 						"ORDER BY 1");
 
@@ -6947,6 +6960,7 @@ getAOTableInfo(Archive *fout)
 	i_visimaprelid = PQfnumber(res, "visimaprelid");
 	i_visimapreltype = PQfnumber(res, "visimapreltype");
 	i_visimapidxid = PQfnumber(res, "visimapidxid");
+	i_columnstore = PQfnumber(res, "columnstore");
 
 	for (int i = 0; i < ntups; i++)
 	{
@@ -6963,6 +6977,8 @@ getAOTableInfo(Archive *fout)
 			aotblinfo->visimapreltype = atooid(PQgetvalue(res, i, i_visimapreltype));
 			aotblinfo->visimapidxid = atooid(PQgetvalue(res, i, i_visimapidxid));
 			tbinfo->aotbl = aotblinfo;
+			if (!PQgetisnull(res, i, i_columnstore))
+				tbinfo->amname = (PQgetvalue(res, i, i_columnstore)[0] == 't') ? "ao_column" : "ao_row";
 		}
 	}
 	PQclear(res);
@@ -14305,6 +14321,7 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 	const char *aggmtransspace;
 	const char *agginitval;
 	const char *aggminitval;
+	bool		aggrepsafeexec;
 	const char *proparallel;
 	char		defaultfinalmodify;
 
@@ -14380,6 +14397,13 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 								 "'-' AS aggdeserialfn,\n"
 								 "'u' AS proparallel,\n");
 
+		if (fout->remoteVersion >= GPDB7_MAJOR_PGVERSION)
+			appendPQExpBufferStr(query,
+								 "aggrepsafeexec,\n");
+		else
+			appendPQExpBufferStr(query,
+								 "false AS aggrepsafeexec,\n");
+
 		if (fout->remoteVersion >= 110000)
 			appendPQExpBufferStr(query,
 								 "aggfinalmodify,\n"
@@ -14428,6 +14452,7 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 	aggmtransspace = PQgetvalue(res, 0, PQfnumber(res, "aggmtransspace"));
 	agginitval = PQgetvalue(res, 0, i_agginitval);
 	aggminitval = PQgetvalue(res, 0, i_aggminitval);
+	aggrepsafeexec = (PQgetvalue(res, 0, PQfnumber(res, "aggrepsafeexec"))[0] == 't');
 	proparallel = PQgetvalue(res, 0, PQfnumber(res, "proparallel"));
 
 	if (fout->remoteVersion >= 80400)
@@ -14553,6 +14578,9 @@ dumpAgg(Archive *fout, const AggInfo *agginfo)
 			}
 		}
 	}
+
+	if (aggrepsafeexec)
+		appendPQExpBuffer(details, ",\n    REPSAFE = true");
 
 	aggsortconvop = getFormattedOperatorName(aggsortop);
 	if (aggsortconvop)
@@ -16795,7 +16823,15 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 						 * clean things up later.
 						 */
 						appendPQExpBufferStr(q, " INTEGER /* dummy */");
-						/* and skip to the next column */
+
+						/* Dropped columns are dumped during binary upgrade.
+						 * Dump the encoding clause also to maintain a consistent
+						 * catalog entry in pg_attribute_encoding post upgrade.
+						 */
+						if (tbinfo->attencoding[j] != NULL)
+							appendPQExpBuffer(q, " ENCODING (%s)", tbinfo->attencoding[j]);
+
+						/* Skip all the rest */
 						continue;
 					}
 
@@ -16981,7 +17017,7 @@ dumpTableSchema(Archive *fout, const TableInfo *tbinfo)
 		 * from <= GPDB6.
 		 */
 		if (fout->remoteVersion < GPDB7_MAJOR_PGVERSION &&
-				(*tbinfo->partclause && *tbinfo->partclause != '\0'))
+				(tbinfo->partclause && *tbinfo->partclause != '\0'))
 		{
 			/* partition by clause */
 			appendPQExpBuffer(q, " %s", tbinfo->partclause);

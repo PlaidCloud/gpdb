@@ -187,6 +187,8 @@ Query *FlattenJoinAliasVar(Query *query, gpos::ULONG query_level);
 // is aggregate ordered
 bool IsOrderedAgg(Oid aggid);
 
+bool IsRepSafeAgg(Oid aggid);
+
 // does aggregate have a combine function (and serial/deserial functions, if needed)
 bool IsAggPartialCapable(Oid aggid);
 
@@ -209,6 +211,7 @@ HeapTuple GetAttStats(Oid relid, AttrNumber attnum);
 List *GetExtStats(Relation rel);
 
 char *GetExtStatsName(Oid statOid);
+List *GetExtStatsKinds(Oid statOid);
 
 // does a function exist with the given oid
 bool FunctionExists(Oid oid);
@@ -483,10 +486,6 @@ Node *MutateExpressionTree(Node *node, Node *(*mutator)(), void *context);
 Node *MutateQueryOrExpressionTree(Node *node, Node *(*mutator)(), void *context,
 								  int flags);
 
-bool RelIsPartitioned(Oid relid);
-
-bool IndexIsPartitioned(Oid relid);
-
 // check whether a relation is inherited
 bool HasSubclassSlow(Oid rel_oid);
 
@@ -498,16 +497,6 @@ GpPolicy *GetDistributionPolicy(Relation rel);
 // the child partitions is randomly distributed
 gpos::BOOL IsChildPartDistributionMismatched(Relation rel);
 
-#if 0
-    // return true if the table is partitioned and any of the child partitions
-    // have a trigger of the given type
-    gpos::BOOL ChildPartHasTriggers(Oid oid, int trigger_type);
-#endif
-
-// estimate the relation size using the real number of blocks and tuple density
-void CdbEstimateRelationSize(RelOptInfo *relOptInfo, Relation rel,
-							 int32 *attr_widths, BlockNumber *pages,
-							 double *tuples, double *allvisfrac);
 double CdbEstimatePartitionedNumTuples(Relation rel);
 
 // close the given relation
@@ -518,6 +507,8 @@ List *GetRelationIndexes(Relation relation);
 
 // build an array of triggers for this relation
 void BuildRelationTriggers(Relation rel);
+
+MVNDistinct *GetMVNDistinct(Oid stat_oid);
 
 MVDependencies *GetMVDependencies(Oid stat_oid);
 
@@ -544,21 +535,6 @@ bool Equals(void *p1, void *p2);
 bool IsCompositeType(Oid typid);
 
 bool IsTextRelatedType(Oid typid);
-
-// get integer value from an Integer value node
-int GetIntFromValue(Node *node);
-
-// parse external table URI
-Uri *ParseExternalTableUri(const char *uri);
-
-// returns ComponentDatabases
-CdbComponentDatabases *GetComponentDatabases(void);
-
-// compare two strings ignoring case
-int StrCmpIgnoreCase(const char *s1, const char *s2);
-
-// construct random segment map
-bool *ConstructRandomSegMap(int total_primaries, int total_to_skip);
 
 // create an empty 'StringInfoData' & return a pointer to it
 StringInfo MakeStringInfo(void);
@@ -594,7 +570,8 @@ void CheckRTPermissions(List *rtable);
 bool HasUpdateTriggers(Oid relid);
 
 // get index operator family properties
-void IndexOpProperties(Oid opno, Oid opfamily, int *strategy, Oid *righttype);
+void IndexOpProperties(Oid opno, Oid opfamily, StrategyNumber *strategynumber,
+					   Oid *righttype);
 
 // get oids of families this operator belongs to
 List *GetOpFamiliesForScOp(Oid opno);
@@ -662,6 +639,8 @@ MemoryContext GPDBAllocSetContextCreate();
 void GPDBMemoryContextDelete(MemoryContext context);
 
 List *GetRelChildIndexes(Oid reloid);
+
+Oid GetForeignServerId(Oid reloid);
 
 void GPDBLockRelationOid(Oid reloid, int lockmode);
 

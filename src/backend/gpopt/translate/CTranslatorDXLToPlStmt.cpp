@@ -28,12 +28,9 @@ extern "C" {
 #include "nodes/primnodes.h"
 #include "partitioning/partdesc.h"
 #include "storage/lmgr.h"
-#include "utils/partcache.h"
-#if 0
-#include "cdb/partitionselection.h"
-#endif
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/partcache.h"
 #include "utils/rel.h"
 #include "utils/typcache.h"
 #include "utils/uri.h"
@@ -65,6 +62,7 @@ extern "C" {
 #include "naucrates/dxl/operators/CDXLPhysicalCTEConsumer.h"
 #include "naucrates/dxl/operators/CDXLPhysicalCTEProducer.h"
 #include "naucrates/dxl/operators/CDXLPhysicalDynamicBitmapTableScan.h"
+#include "naucrates/dxl/operators/CDXLPhysicalDynamicForeignScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalDynamicIndexScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalDynamicTableScan.h"
 #include "naucrates/dxl/operators/CDXLPhysicalGatherMotion.h"
@@ -244,11 +242,6 @@ CTranslatorDXLToPlStmt::GetPlannedStmtFromDXL(const CDXLNode *dxlnode,
 	planned_stmt->subplans = m_dxl_to_plstmt_context->GetSubplanEntriesList();
 	planned_stmt->planTree = plan;
 
-#if 0
-	// store partitioned table indexes in planned stmt
-	planned_stmt->queryPartOids = m_dxl_to_plstmt_context->GetPartitionedTablesList();
-	planned_stmt->numSelectorsPerScanId = m_dxl_to_plstmt_context->GetNumPartitionSelectorsList();
-#endif
 	planned_stmt->canSetTag = can_set_tag;
 	planned_stmt->relationOids = oids_list;
 
@@ -465,6 +458,12 @@ CTranslatorDXLToPlStmt::TranslateDXLOperatorToPlan(
 										  ctxt_translation_prev_siblings);
 			break;
 		}
+		case EdxlopPhysicalDynamicForeignScan:
+		{
+			plan = TranslateDXLDynForeignScan(dxlnode, output_context,
+											  ctxt_translation_prev_siblings);
+			break;
+		}
 		case EdxlopPhysicalTVF:
 		{
 			plan = TranslateDXLTvf(dxlnode, output_context,
@@ -585,10 +584,6 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	// we will add the new range table entry as the last element of the range table
-	Index index =
-		gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) + 1;
-
 	const CDXLTableDescr *dxl_table_descr =
 		phy_tbl_scan_dxlop->GetDXLTableDescr();
 	const IMDRelation *md_rel =
@@ -600,11 +595,8 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 	GPOS_RTL_ASSERT(dxl_table_descr->LockMode() != -1);
 	gpdb::GPDBLockRelationOid(mdid->Oid(), dxl_table_descr->LockMode());
 
-	RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-		dxl_table_descr, index, &base_table_context);
-	GPOS_ASSERT(nullptr != rte);
-	rte->requiredPerms |= ACL_SELECT;
-	m_dxl_to_plstmt_context->AddRTE(rte);
+	Index index =
+		ProcessDXLTblDescr(dxl_table_descr, &base_table_context, ACL_SELECT);
 
 	// a table scan node must have 2 children: projection list and filter
 	GPOS_ASSERT(2 == tbl_scan_dxlnode->Arity());
@@ -628,6 +620,7 @@ CTranslatorDXLToPlStmt::TranslateDXLTblScan(
 	if (IMDRelation::ErelstorageForeign == md_rel->RetrieveRelStorageType())
 	{
 		OID oidRel = CMDIdGPDB::CastMdid(md_rel->MDId())->Oid();
+		RangeTblEntry *rte = m_dxl_to_plstmt_context->GetRTEByIndex(index);
 
 		ForeignScan *foreign_scan =
 			gpdb::CreateForeignScan(oidRel, index, qual, targetlist,
@@ -777,9 +770,6 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	Index index =
-		gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) + 1;
-
 	const CDXLTableDescr *dxl_table_descr =
 		physical_idx_scan_dxlop->GetDXLTableDescr();
 	const IMDRelation *md_rel =
@@ -791,12 +781,8 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexScan(
 	GPOS_RTL_ASSERT(dxl_table_descr->LockMode() != -1);
 	gpdb::GPDBLockRelationOid(mdid->Oid(), dxl_table_descr->LockMode());
 
-	RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-		physical_idx_scan_dxlop->GetDXLTableDescr(), index,
-		&base_table_context);
-	GPOS_ASSERT(nullptr != rte);
-	rte->requiredPerms |= ACL_SELECT;
-	m_dxl_to_plstmt_context->AddRTE(rte);
+	Index index =
+		ProcessDXLTblDescr(dxl_table_descr, &base_table_context, ACL_SELECT);
 
 	IndexScan *index_scan = nullptr;
 	index_scan = MakeNode(IndexScan);
@@ -925,18 +911,11 @@ CTranslatorDXLToPlStmt::TranslateDXLIndexOnlyScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	Index index =
-		gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) + 1;
-
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(
 		physical_idx_scan_dxlop->GetDXLTableDescr()->MDId());
 
-	RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-		physical_idx_scan_dxlop->GetDXLTableDescr(), index,
-		&base_table_context);
-	GPOS_ASSERT(nullptr != rte);
-	rte->requiredPerms |= ACL_SELECT;
-	m_dxl_to_plstmt_context->AddRTE(rte);
+	Index index =
+		ProcessDXLTblDescr(table_desc, &base_table_context, ACL_SELECT);
 
 	IndexOnlyScan *index_scan = MakeNode(IndexOnlyScan);
 	index_scan->scan.scanrelid = index;
@@ -1158,7 +1137,7 @@ CTranslatorDXLToPlStmt::TranslateIndexConditions(
 		}
 
 		// retrieve index strategy and subtype
-		INT strategy_num = 0;
+		StrategyNumber strategy_num;
 		OID index_subtype_oid = InvalidOid;
 
 		OID cmp_operator_oid =
@@ -1172,8 +1151,8 @@ CTranslatorDXLToPlStmt::TranslateIndexConditions(
 
 		// create index qual
 		index_qual_info_array->Append(GPOS_NEW(m_mp) CIndexQualInfo(
-			attno, index_cond_expr, original_index_cond_expr,
-			(StrategyNumber) strategy_num, index_subtype_oid));
+			attno, index_cond_expr, original_index_cond_expr, strategy_num,
+			index_subtype_oid));
 	}
 
 	// the index quals much be ordered by attribute number
@@ -3122,9 +3101,9 @@ CTranslatorDXLToPlStmt::TranslateDXLSort(
 	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
 {
 	// Ensure operator of sort_dxlnode exists and is EdxlopPhysicalSort
-	CDXLOperator *sort_dxlop = sort_dxlnode->GetOperator();
-	GPOS_ASSERT(nullptr != sort_dxlop);
-	GPOS_ASSERT(EdxlopPhysicalSort == sort_dxlop->GetDXLOperator());
+	GPOS_ASSERT(nullptr != sort_dxlnode->GetOperator());
+	GPOS_ASSERT(EdxlopPhysicalSort ==
+				sort_dxlnode->GetOperator()->GetDXLOperator());
 
 	// create sort plan node
 	Sort *sort = MakeNode(Sort);
@@ -3324,7 +3303,6 @@ ContainsSetReturningFuncOrOp(const CDXLNode *project_list_dxlnode,
 	return false;
 }
 
-// GPDB_12_MERGE_FIXME: this duplicates a check in ExecInitProjectSet
 static bool
 SanityCheckProjectSetTargetList(List *targetlist)
 {
@@ -3700,16 +3678,9 @@ CTranslatorDXLToPlStmt::TranslateDXLAppend(
 
 		// translation context for column mappings in the base relation
 		CDXLTranslateContextBaseTable base_table_context(m_mp);
-		// we will add the new range table entry as the last element of the range table
-		Index index =
-			gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) +
-			1;
-		RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-			phy_append_dxlop->GetDXLTableDesc(), index, &base_table_context);
-		GPOS_ASSERT(nullptr != rte);
-		rte->requiredPerms |= ACL_SELECT;
 
-		m_dxl_to_plstmt_context->AddRTE(rte);
+		(void) ProcessDXLTblDescr(phy_append_dxlop->GetDXLTableDesc(),
+								  &base_table_context, ACL_SELECT);
 
 		append->join_prune_paramids = NIL;
 		const ULongPtrArray *selector_ids = phy_append_dxlop->GetSelectorIds();
@@ -4074,16 +4045,8 @@ CTranslatorDXLToPlStmt::TranslateDXLDynTblScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	// add the new range table entry as the last element of the range table
-	Index index =
-		gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) + 1;
-
-	RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-		dyn_tbl_scan_dxlop->GetDXLTableDescr(), index, &base_table_context);
-	GPOS_ASSERT(nullptr != rte);
-	rte->requiredPerms |= ACL_SELECT;
-
-	m_dxl_to_plstmt_context->AddRTE(rte);
+	Index index = ProcessDXLTblDescr(dyn_tbl_scan_dxlop->GetDXLTableDescr(),
+									 &base_table_context, ACL_SELECT);
 
 	// create dynamic scan node
 	DynamicSeqScan *dyn_seq_scan = MakeNode(DynamicSeqScan);
@@ -4164,16 +4127,11 @@ CTranslatorDXLToPlStmt::TranslateDXLDynIdxScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	Index index =
-		gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) + 1;
+	const CDXLTableDescr *table_desc = dyn_index_scan_dxlop->GetDXLTableDescr();
+	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_desc->MDId());
 
-	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(
-		dyn_index_scan_dxlop->GetDXLTableDescr()->MDId());
-	RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-		dyn_index_scan_dxlop->GetDXLTableDescr(), index, &base_table_context);
-	GPOS_ASSERT(nullptr != rte);
-	rte->requiredPerms |= ACL_SELECT;
-	m_dxl_to_plstmt_context->AddRTE(rte);
+	Index index =
+		ProcessDXLTblDescr(table_desc, &base_table_context, ACL_SELECT);
 
 	DynamicIndexScan *dyn_idx_scan = MakeNode(DynamicIndexScan);
 
@@ -4266,6 +4224,179 @@ CTranslatorDXLToPlStmt::TranslateDXLDynIdxScan(
 
 	return (Plan *) dyn_idx_scan;
 }
+
+// remaps varnos qual and targetlist from one tuple descriptor to another.
+// eg: remap varnos from a root partition to a child partition, or vice-versa
+static TupleDesc
+RemapAttrsFromTupDesc(TupleDesc fromDesc, TupleDesc toDesc, Index index,
+					  List *qual, List *targetlist)
+{
+	AttrNumber *attMap;
+	attMap = convert_tuples_by_name_map_if_req(toDesc, fromDesc, "unused msg");
+
+	/* If attribute remapping is not necessary, then do not change the varattno */
+	if (attMap)
+	{
+		change_varattnos_of_a_varno((Node *) qual, attMap, index);
+		change_varattnos_of_a_varno((Node *) targetlist, attMap, index);
+		fromDesc = toDesc;
+		pfree(attMap);
+	}
+	return fromDesc;
+}
+
+//---------------------------------------------------------------------------
+//	@function:
+//		CTranslatorDXLToPlStmt::TranslateDXLDynForeignScan
+//
+//	@doc:
+//		Translates a DXL dynamic foreign scan node into a DynamicForeignScan node
+//		This is similar to TranslateDXLDynTblScan, but has additional logic to
+//		populate the fdw_private_array. Note that because we need to call
+//		CreateForeignScan to populate this array, we need to map the qual
+//		and targetlist from the child partitions from the root partition
+//		While we do some of this in the executor, since we populate the
+//		fdw_private for each child here, we also need mapping logic here
+//
+//---------------------------------------------------------------------------
+Plan *
+CTranslatorDXLToPlStmt::TranslateDXLDynForeignScan(
+	const CDXLNode *dyn_foreign_scan_dxlnode,
+	CDXLTranslateContext *output_context,
+	CDXLTranslationContextArray *ctxt_translation_prev_siblings)
+{
+	// translate table descriptor into a range table entry
+	CDXLPhysicalDynamicForeignScan *dyn_foreign_scan_dxlop =
+		CDXLPhysicalDynamicForeignScan::Cast(
+			dyn_foreign_scan_dxlnode->GetOperator());
+
+	// translation context for column mappings in the base relation
+	CDXLTranslateContextBaseTable base_table_context(m_mp);
+
+	Index index = ProcessDXLTblDescr(dyn_foreign_scan_dxlop->GetDXLTableDescr(),
+									 &base_table_context, ACL_SELECT);
+	// rte of root dynamic scan
+	RangeTblEntry *rte = m_dxl_to_plstmt_context->GetRTEByIndex(index);
+	Oid oid_root = rte->relid;
+	// create dynamic scan node
+	DynamicForeignScan *dyn_foreign_scan = MakeNode(DynamicForeignScan);
+
+	IMdIdArray *parts = dyn_foreign_scan_dxlop->GetParts();
+
+	List *oids_list = NIL;
+	for (ULONG ul = 0; ul < parts->Size(); ul++)
+	{
+		Oid part = CMDIdGPDB::CastMdid((*parts)[ul])->Oid();
+		oids_list = gpdb::LAppendOid(oids_list, part);
+	}
+
+	dyn_foreign_scan->partOids = oids_list;
+	dyn_foreign_scan->join_prune_paramids = NIL;
+
+	OID oid_type =
+		CMDIdGPDB::CastMdid(m_md_accessor->PtMDType<IMDTypeInt4>()->MDId())
+			->Oid();
+
+	const ULongPtrArray *selector_ids =
+		dyn_foreign_scan_dxlop->GetSelectorIds();
+	// populate selector ids for dynamic partition elimination
+	for (ULONG ul = 0; ul < selector_ids->Size(); ++ul)
+	{
+		ULONG selector_id = *(*selector_ids)[ul];
+		ULONG param_id = m_dxl_to_plstmt_context->GetParamIdForSelector(
+			oid_type, selector_id);
+		dyn_foreign_scan->join_prune_paramids =
+			gpdb::LAppendInt(dyn_foreign_scan->join_prune_paramids, param_id);
+	}
+
+	GPOS_ASSERT(2 == dyn_foreign_scan_dxlnode->Arity());
+
+	// translate proj list and filter for root
+	CDXLNode *project_list_dxlnode =
+		(*dyn_foreign_scan_dxlnode)[EdxltsIndexProjList];
+	CDXLNode *filter_dxlnode = (*dyn_foreign_scan_dxlnode)[EdxltsIndexFilter];
+
+	List *targetlist = NIL;
+	List *qual = NIL;
+	TranslateProjListAndFilter(
+		project_list_dxlnode, filter_dxlnode,
+		&base_table_context,  // translate context for the base table
+		nullptr,			  // translate_ctxt_left and pdxltrctxRight,
+		&targetlist, &qual, output_context);
+
+	// set the rte relid to the child, since we need to call the fdw api
+	// which assumes we're working with a foreign table. The root partition is
+	// not foreign!
+	Oid oid_first_child = CMDIdGPDB::CastMdid((*parts)[0])->Oid();
+	rte->relid = oid_first_child;
+	// need to lock foreign rel when calling out to CreateForeignScan
+	gpdb::GPDBLockRelationOid(
+		oid_first_child,
+		dyn_foreign_scan_dxlop->GetDXLTableDescr()->LockMode());
+
+	gpdb::RelationWrapper rootRel = gpdb::GetRelation(oid_root);
+	gpdb::RelationWrapper childRel = gpdb::GetRelation(oid_first_child);
+
+	TupleDesc fromDesc = RemapAttrsFromTupDesc(RelationGetDescr(rootRel),
+											   RelationGetDescr(childRel),
+											   index, qual, targetlist);
+
+	ForeignScan *foreign_scan_first_part =
+		gpdb::CreateForeignScan(oid_first_child, index, qual, targetlist,
+								m_dxl_to_plstmt_context->m_orig_query, rte);
+
+	// Set the plan fields to the first partition. We still want the plan type to be
+	// a dynamic foreign scan
+	dyn_foreign_scan->foreignscan = *foreign_scan_first_part;
+	dyn_foreign_scan->foreignscan.scan.plan.type = T_DynamicForeignScan;
+	dyn_foreign_scan->foreignscan.scan.scanrelid = index;
+
+	Plan *plan = &(dyn_foreign_scan->foreignscan.scan.plan);
+	plan->plan_node_id = m_dxl_to_plstmt_context->GetNextPlanId();
+	plan->targetlist = targetlist;
+	plan->qual = qual;
+
+	// populate fdw_private_list. Each fdw_private can and typically will be different for each partition
+	// we have no way of knowing exactly what will be different, or which specific api calls will populate the
+	// different part of fdw_private. So we have to be conservative and call everything for each partition
+	// We call CreateForeignScan for each partition, and append the fdw_private to the list
+	dyn_foreign_scan->fdw_private_list = NIL;
+	for (ULONG ul = 0; ul < parts->Size(); ul++)
+	{
+		rte->relid = CMDIdGPDB::CastMdid((*parts)[ul])->Oid();
+		gpdb::RelationWrapper childRel = gpdb::GetRelation(rte->relid);
+
+		fromDesc = RemapAttrsFromTupDesc(fromDesc, RelationGetDescr(childRel),
+										 index, qual, targetlist);
+
+		// need to lock foreign rel when calling out to CreateForeignScan
+		gpdb::GPDBLockRelationOid(
+			rte->relid, dyn_foreign_scan_dxlop->GetDXLTableDescr()->LockMode());
+
+		ForeignScan *foreign_scan =
+			gpdb::CreateForeignScan(rte->relid, index, qual, targetlist,
+									m_dxl_to_plstmt_context->m_orig_query, rte);
+
+		dyn_foreign_scan->fdw_private_list = gpdb::LAppend(
+			dyn_foreign_scan->fdw_private_list, foreign_scan->fdw_private);
+	}
+	// convert qual and targetlist back to root relation. This is used by the
+	// executor node to remap to the children
+	gpdb::RelationWrapper prevRel = gpdb::GetRelation(rte->relid);
+	fromDesc = RemapAttrsFromTupDesc(RelationGetDescr(prevRel),
+									 RelationGetDescr(rootRel), index, qual,
+									 targetlist);
+
+	// set the rte relid back to the root
+	rte->relid = oid_root;
+	// translate operator costs
+	TranslatePlanCosts(dyn_foreign_scan_dxlnode, plan);
+
+	SetParamIds(plan);
+
+	return plan;
+}
+
 //---------------------------------------------------------------------------
 //	@function:
 //		CTranslatorDXLToPlStmt::TranslateDXLDml
@@ -4346,18 +4477,12 @@ CTranslatorDXLToPlStmt::TranslateDXLDml(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	// add the new range table entry as the last element of the range table
+	CDXLTableDescr *table_descr = phy_dml_dxlop->GetDXLTableDescr();
+
 	Index index =
-		gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) + 1;
+		ProcessDXLTblDescr(table_descr, &base_table_context, acl_mode);
 
 	m_result_rel_list = gpdb::LAppendInt(m_result_rel_list, index);
-
-	CDXLTableDescr *table_descr = phy_dml_dxlop->GetDXLTableDescr();
-	RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-		table_descr, index, &base_table_context);
-	GPOS_ASSERT(nullptr != rte);
-	rte->requiredPerms |= acl_mode;
-	m_dxl_to_plstmt_context->AddRTE(rte, true);
 
 	CDXLNode *project_list_dxlnode = (*dml_dxlnode)[0];
 	CDXLNode *child_dxlnode = (*dml_dxlnode)[1];
@@ -4777,40 +4902,74 @@ CTranslatorDXLToPlStmt::TranslateDXLAssert(
 
 //---------------------------------------------------------------------------
 //	@function:
-//		CTranslatorDXLToPlStmt::TranslateDXLTblDescrToRangeTblEntry
+//		CTranslatorDXLToPlStmt::ProcessDXLTblDescr
 //
 //	@doc:
-//		Translates a DXL table descriptor into a range table entry. If an index
-//		descriptor is provided, we use the mapping from colids to index attnos
-//		instead of table attnos
+//		Translates a DXL table descriptor into a range table entry and stores
+//		it in m_dxl_to_plstmt_context if it's needed (in case of DML operations
+//		there is more than one table descriptors which point to the result
+//		relation, so if rte was alredy translated, this rte will be updated and
+//		index of this rte at m_dxl_to_plstmt_context->m_rtable_entries_list
+//		(shortened as "rte_list"), will be returned, if the rte wasn't
+//		translated, the newly created rte will be appended to rte_list and it's
+//		index returned). Also this function fills base_table_context for the
+//		mapping from colids to index attnos instead of table attnos.
+//		Returns index of translated range table entry at the rte_list.
 //
 //---------------------------------------------------------------------------
-RangeTblEntry *
-CTranslatorDXLToPlStmt::TranslateDXLTblDescrToRangeTblEntry(
-	const CDXLTableDescr *table_descr, Index index,
-	CDXLTranslateContextBaseTable *base_table_context)
+Index
+CTranslatorDXLToPlStmt::ProcessDXLTblDescr(
+	const CDXLTableDescr *table_descr,
+	CDXLTranslateContextBaseTable *base_table_context, AclMode acl_mode)
 {
 	GPOS_ASSERT(nullptr != table_descr);
+
+	BOOL rte_was_translated = false;
+	Index index = m_dxl_to_plstmt_context->GetRTEIndexByTableDescr(
+		table_descr, &rte_was_translated);
 
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_descr->MDId());
 	const ULONG num_of_non_sys_cols =
 		CTranslatorUtils::GetNumNonSystemColumns(md_rel);
 
-	RangeTblEntry *rte = MakeNode(RangeTblEntry);
-	rte->rtekind = RTE_RELATION;
-
 	// get oid for table
 	Oid oid = CMDIdGPDB::CastMdid(table_descr->MDId())->Oid();
 	GPOS_ASSERT(InvalidOid != oid);
 
-	rte->relid = oid;
-	rte->checkAsUser = table_descr->GetExecuteAsUserId();
-	rte->requiredPerms |= ACL_NO_RIGHTS;
-	rte->rellockmode = table_descr->LockMode();
-
 	// save oid and range index in translation context
 	base_table_context->SetOID(oid);
 	base_table_context->SetRelIndex(index);
+
+	// save mapping col id -> index in translate context
+	const ULONG arity = table_descr->Arity();
+	for (ULONG ul = 0; ul < arity; ++ul)
+	{
+		const CDXLColDescr *dxl_col_descr = table_descr->GetColumnDescrAt(ul);
+		GPOS_ASSERT(nullptr != dxl_col_descr);
+
+		INT attno = dxl_col_descr->AttrNum();
+		GPOS_ASSERT(0 != attno);
+
+		(void) base_table_context->InsertMapping(dxl_col_descr->Id(), attno);
+	}
+
+	// descriptor was already processed, and translated RTE is stored at
+	// context rtable list (only update required perms of this rte is needed)
+	if (rte_was_translated)
+	{
+		RangeTblEntry *rte = m_dxl_to_plstmt_context->GetRTEByIndex(index);
+		GPOS_ASSERT(nullptr != rte);
+		rte->requiredPerms |= acl_mode;
+		return index;
+	}
+
+	// create a new RTE (and it's alias) and store it at context rtable list
+	RangeTblEntry *rte = MakeNode(RangeTblEntry);
+	rte->rtekind = RTE_RELATION;
+	rte->relid = oid;
+	rte->checkAsUser = table_descr->GetExecuteAsUserId();
+	rte->requiredPerms |= acl_mode;
+	rte->rellockmode = table_descr->LockMode();
 
 	Alias *alias = MakeNode(Alias);
 	alias->colnames = NIL;
@@ -4820,18 +4979,11 @@ CTranslatorDXLToPlStmt::TranslateDXLTblDescrToRangeTblEntry(
 		table_descr->MdName()->GetMDName()->GetBuffer());
 
 	// get column names
-	const ULONG arity = table_descr->Arity();
-
 	INT last_attno = 0;
-
 	for (ULONG ul = 0; ul < arity; ++ul)
 	{
 		const CDXLColDescr *dxl_col_descr = table_descr->GetColumnDescrAt(ul);
-		GPOS_ASSERT(nullptr != dxl_col_descr);
-
 		INT attno = dxl_col_descr->AttrNum();
-
-		GPOS_ASSERT(0 != attno);
 
 		if (0 < attno)
 		{
@@ -4854,9 +5006,6 @@ CTranslatorDXLToPlStmt::TranslateDXLTblDescrToRangeTblEntry(
 			alias->colnames = gpdb::LAppend(alias->colnames, val_colname);
 			last_attno = attno;
 		}
-
-		// save mapping col id -> index in translate context
-		(void) base_table_context->InsertMapping(dxl_col_descr->Id(), attno);
 	}
 
 	// if there are any dropped columns at the end, add those too to the RangeTblEntry
@@ -4868,7 +5017,9 @@ CTranslatorDXLToPlStmt::TranslateDXLTblDescrToRangeTblEntry(
 
 	rte->eref = alias;
 
-	return rte;
+	m_dxl_to_plstmt_context->AddRTE(rte);
+
+	return index;
 }
 
 //---------------------------------------------------------------------------
@@ -5809,10 +5960,6 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 	// translation context for column mappings in the base relation
 	CDXLTranslateContextBaseTable base_table_context(m_mp);
 
-	// add the new range table entry as the last element of the range table
-	Index index =
-		gpdb::ListLength(m_dxl_to_plstmt_context->GetRTableEntriesList()) + 1;
-
 	const IMDRelation *md_rel = m_md_accessor->RetrieveRel(table_descr->MDId());
 
 	// Lock any table we are to scan, since it may not have been properly locked
@@ -5821,12 +5968,8 @@ CTranslatorDXLToPlStmt::TranslateDXLBitmapTblScan(
 	GPOS_RTL_ASSERT(table_descr->LockMode() != -1);
 	gpdb::GPDBLockRelationOid(mdid->Oid(), table_descr->LockMode());
 
-	RangeTblEntry *rte = TranslateDXLTblDescrToRangeTblEntry(
-		table_descr, index, &base_table_context);
-	GPOS_ASSERT(nullptr != rte);
-	rte->requiredPerms |= ACL_SELECT;
-
-	m_dxl_to_plstmt_context->AddRTE(rte);
+	Index index =
+		ProcessDXLTblDescr(table_descr, &base_table_context, ACL_SELECT);
 
 	DynamicBitmapHeapScan *dscan;
 	BitmapHeapScan *bitmap_tbl_scan;

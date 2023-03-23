@@ -221,8 +221,9 @@ CTestUtils::PtabdescPlainWithColNameFormat(
 		mp, mdid, nameTable,
 		false,	// convert_hash_to_random
 		IMDRelation::EreldistrRandom, IMDRelation::ErelstorageHeap,
-		0,	// ulExecuteAsUser
-		-1	// lockmode
+		0,	 // ulExecuteAsUser
+		-1,	 // lockmode
+		0	 // UNASSIGNED_QUERYID
 	);
 
 	for (ULONG i = 0; i < num_cols; i++)
@@ -451,12 +452,13 @@ CTestUtils::PexprLogicalDynamicGetWithIndexes(CMemoryPool *mp)
 	CWStringConst strAlias(GPOS_WSZ_LIT("P1Alias"));
 
 	IMdIdArray *partition_mdids = GPOS_NEW(mp) IMdIdArray(mp);
+	IMdIdArray *foreign_mdids = GPOS_NEW(mp) IMdIdArray(mp);
 
 	return GPOS_NEW(mp) CExpression(
 		mp, GPOS_NEW(mp) CLogicalDynamicGet(
 				mp, GPOS_NEW(mp) CName(mp, CName(&strAlias)), ptabdesc,
 				0,	// ulPartIndex
-				partition_mdids));
+				partition_mdids, foreign_mdids));
 }
 
 
@@ -1859,11 +1861,12 @@ CTestUtils::PexprLogicalDynamicGet(CMemoryPool *mp, CTableDescriptor *ptabdesc,
 	GPOS_ASSERT(nullptr != ptabdesc);
 
 	IMdIdArray *partition_mdids = GPOS_NEW(mp) IMdIdArray(mp);
+	IMdIdArray *foreign_mdids = GPOS_NEW(mp) IMdIdArray(mp);
 
-	return GPOS_NEW(mp)
-		CExpression(mp, GPOS_NEW(mp) CLogicalDynamicGet(
-							mp, GPOS_NEW(mp) CName(mp, CName(pstrTableAlias)),
-							ptabdesc, ulPartIndex, partition_mdids));
+	return GPOS_NEW(mp) CExpression(
+		mp, GPOS_NEW(mp) CLogicalDynamicGet(
+				mp, GPOS_NEW(mp) CName(mp, CName(pstrTableAlias)), ptabdesc,
+				ulPartIndex, partition_mdids, foreign_mdids));
 }
 
 //---------------------------------------------------------------------------

@@ -220,7 +220,10 @@ For each query run, prints the Greenplum query slice plan. *client\_min\_message
 
 ## <a id="default_statistics_target"></a>default\_statistics\_target 
 
-Sets the default statistics sampling target \(the number of values that are stored in the list of common values\) for table columns that have not had a column-specific target set via `ALTER TABLE SET STATISTICS`. Larger values may improve the quality of the Postgres Planner estimates, particularly for columns with irregular data distributions, at the expense of consuming more space in `pg_statistic` and slightly more time to compute the estimates. Conversely, a lower limit might be sufficient for columns with simple data distributions.
+Sets the default statistics sampling target \(the number of values that are stored in the list of common values\) for table columns that have not had a column-specific target set via `ALTER TABLE SET STATISTICS`. Larger values may improve the quality of the Postgres Planner estimates, particularly for columns with irregular data distributions, at the expense of consuming more space in `pg_statistic` and slightly more time to compute the estimates. Conversely, a lower limit might be sufficient for columns with simple data distributions. The default is 100.
+
+For more information on the use of statistics by the Postgres Planner, refer to [Statistics Used by the Planner](https://www.postgresql.org/docs/12/planner-stats.html) in the PostgreSQL documentation.
+
 
 |Value Range|Default|Set Classifications|
 |-----------|-------|-------------------|
@@ -416,6 +419,18 @@ The Postgres Planner will merge sub-queries into upper queries if the resulting 
 |Value Range|Default|Set Classifications|
 |-----------|-------|-------------------|
 |1-*n*|20|master, session, reload|
+
+## <a id="gin_pending_list_limit"></a>gin\_pending\_list\_limit
+
+Sets the maximum size of a GIN index's pending list, which is used when `fastupdate` is enabled. If the list grows larger than this maximum size, it is cleaned up by moving the entries in it to the index's main GIN data structure in bulk.
+
+A value specified without units is taken to be kilobytes. The default is four megabytes (4MB).
+
+You can override this setting for individual GIN indexes by changing index storage parameters.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|64 - `MAX_KILOBYTES` |4096|master, session, reload|
 
 ## <a id="gp_adjust_selectivity_for_outerjoins"></a>gp\_adjust\_selectivity\_for\_outerjoins 
 
@@ -825,6 +840,14 @@ Enable `LIMIT` operation to be performed while sorting. Sorts more efficiently w
 |Value Range|Default|Set Classifications|
 |-----------|-------|-------------------|
 |Boolean|on|master, system, restart|
+
+## <a id="gp_explain_jit"></a>gp\_explain\_jit
+
+Prints summarized JIT information from all query executions when JIT compilation is enabled.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|boolean|on|coordinator, session, reload |
 
 ## <a id="gp_external_max_segs"></a>gp\_external\_max\_segs 
 
@@ -1239,6 +1262,18 @@ Identifies the maximum percentage of system CPU resources to allocate to resourc
 |-----------|-------|-------------------|
 |0.1 - 1.0|0.9|local, system, restart|
 
+## <a id="gp_resource_group_cpu_priority"></a>gp_resource_group_cpu_priority
+
+Sets the CPU priority for Greenplum processes relative to non-Greenplum processes when resource groups are enabled. For example, setting this parameter to `10` sets the ratio of allotted CPU resources for Greenplum processes to non-Greenplum processes to 10:1. 
+
+> **Note** 
+> This ratio calculation applies only when the machine's CPU usage is at 100%.
+
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|1 - 50|10|local, system, restart|
+
 ## <a id="gp_resource_group_enable_recalculate_query_mem"></a>gp\_resource\_group\_enable\_recalculate\_query\_mem
 
 > **Note** The `gp_resource_group_enable_recalculate_query_mem` server configuration parameter is enforced only when resource group-based resource management is active.
@@ -1601,6 +1636,86 @@ The value *iso\_8601* will produce output matching the time interval *format wit
 |Value Range|Default|Set Classifications|
 |-----------|-------|-------------------|
 |postgres, postgres\_verbose, sql\_standard, iso\_8601|postgres|master, session, reload|
+
+## <a id="jit"></a>jit
+
+Determines whether JIT compilation may be used by Greenplum Database.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|boolean|off|coordinator, session, reload|
+
+## <a id="jit_above_cost"></a>jit\_above\_cost
+
+Sets the query cost above which JIT compilation is activated when JIT is enabled. Performing JIT compilation costs planning time but can accelerate query execution. Note that setting the JIT cost parameters to ‘0’ forces all queries to be JIT-compiled and, as a result, slows down queries. Setting it to a negative value disables JIT compilation.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|floating point|100000|coordinator, session, reload|
+
+## <a id="jit_debugging_support"></a>jit_debugging_support
+
+If LLVM has the required functionality, register generated functions with GDB. This makes debugging easier. The default setting is `off`. This parameter can only be set at server start or when a client connection starts (for example using `PGOPTIONS`).
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|boolean|off|coordinator, session, reload, superuser|
+
+## <a id="jit_dump_bitcode"></a>jit_dump_bitcode
+
+Writes the generated LLVM IR out to the file system, inside [data_directory](../../install_guide/create_data_dirs.html). This is only useful for working on the internals of the JIT implementation. The default setting is `off`. Only superusers and users with the appropriate `SET` privilege can change this setting.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|boolean|off|coordinator, session, reload|
+
+## <a id="jit_expressions"></a>jit_expressions
+ 
+Allows JIT compilation of expressions, when JIT compilation is activated.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|boolean|on|coordinator, session, reload|
+
+## <a id="jit_inline_above_cost"></a>jit_inline_above_cost
+
+Sets the query cost above which JIT compilation attempts to inline functions and operators. Inlining adds planning time, but can improve execution speed. It is not meaningful to set this to less than `jit_above_cost`. Note that setting the JIT cost parameters to ‘0’ forces all queries to be JIT-compiled and, as a result, slows down queries. Setting it to a negative value disables inlining.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|floating point|500000|coordinator, session, reload|
+
+## <a id="jit_optimize_above_cost"></a>jit_optimize_above_cost
+
+Sets the query cost above which JIT compilation applies expensive optimizations. Such optimization adds planning time, but can improve execution speed. It is not meaningful to set this to less than `jit_above_cost`, and it is unlikely to be beneficial to set it to more than `jit_inline_above_cost`. Note that setting the JIT cost parameters to ‘0’ forces all queries to be JIT-compiled and, as a result, slows down queries. Setting it to a negative value disables expensive optimizations.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|floating point|500000|coordinator, session, reload|
+
+## <a id="jit_profiling_support"></a>jit_profiling_support
+
+If LLVM has the required functionality, emit the data needed to allow `perf` command to profile functions generated by JIT. This writes out files to `~/.debug/jit/`. If you have set and loaded the environment variable `JITDUMPDIR`, it will write to `JITDUMPDIR/debug/jit` instead. You are responsible for performing cleanup when desired. The default setting is `off`. This parameter can only be set at server start or when a client connection starts (for example using `PGOPTIONS`).
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|boolean|off|coordinator, session, reload, superuser|
+
+## <a id="jit_provider"></a>jit_provider
+
+Indicates the name of the JIT provider (library of JIT driver) to load. The default is `llvmjit`, any other value is not officially supported. This parameter can only be set at server start.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|string|llvmjit|local, session, restart, superuser|
+
+## <a id="jit_tuple_deforming"></a>jit_tuple_deforming
+ 
+Allows JIT compilation of tuple deforming, when JIT compilation is activated.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|boolean|on|coordinator, session, reload|
 
 ## <a id="join_collapse_limit"></a>join\_collapse\_limit 
 
@@ -2945,6 +3060,16 @@ Enables updating of the process title every time a new SQL command is received b
 |Value Range|Default|Set Classifications|
 |-----------|-------|-------------------|
 |Boolean|on|local, session, reload|
+
+## <a id="vacuum_cleanup_index_scale_factor"></a>vacuum_cleanup_index_scale_factor
+
+Specifies the fraction of the total number of heap tuples counted in the previous statistics collection that can be inserted without incurring an index scan at the `VACUUM` cleanup stage. The purpose of this parameter is to minimize unnecessary vacuum index scans. This setting currently applies to B-tree indexes only. When its value is 0, `VACUUM` cleanup never skips index scans.
+
+If no tuples were deleted from the heap, B-tree indexes are still scanned at the `VACUUM` cleanup stage when at least one of the following conditions is met: the index statistics are stale, or the index contains deleted pages that can be recycled during cleanup. Index statistics are considered to be stale if the number of newly inserted tuples exceeds the `vacuum_cleanup_index_scale_factor` fraction of the total number of heap tuples detected by the previous statistics collection. The total number of heap tuples is stored in the index meta-page. Note that the meta-page does not include this data until `VACUUM` finds no dead tuples, so B-tree index scan at the cleanup stage can only be skipped if the second and subsequent `VACUUM` cycles detect no dead tuples.
+
+|Value Range|Default|Set Classifications|
+|-----------|-------|-------------------|
+|floating point 0 to 10000000000|0.1|local, session, reload|
 
 ## <a id="vacuum_cost_delay"></a>vacuum\_cost\_delay 
 

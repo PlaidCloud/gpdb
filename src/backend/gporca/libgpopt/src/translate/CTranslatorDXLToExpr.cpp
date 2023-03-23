@@ -593,9 +593,11 @@ CTranslatorDXLToExpr::PexprLogicalGet(const CDXLNode *dxlnode)
 	const IMDRelation *pmdrel = m_pmda->RetrieveRel(table_descr->MDId());
 	if (pmdrel->IsPartitioned())
 	{
-		GPOS_ASSERT(EdxlopLogicalGet == edxlopid);
+		GPOS_ASSERT(EdxlopLogicalGet == edxlopid ||
+					EdxlopLogicalForeignGet == edxlopid);
 
 		IMdIdArray *partition_mdids = pmdrel->ChildPartitionMdids();
+		IMdIdArray *foreign_server_mdids = GPOS_NEW(m_mp) IMdIdArray(m_mp);
 		for (ULONG ul = 0; ul < partition_mdids->Size(); ++ul)
 		{
 			IMDId *part_mdid = (*partition_mdids)[ul];
@@ -607,13 +609,30 @@ CTranslatorDXLToExpr::PexprLogicalGet(const CDXLNode *dxlnode)
 				GPOS_RAISE(gpdxl::ExmaMD, gpdxl::ExmiMDObjUnsupported,
 						   GPOS_WSZ_LIT("Multi-level partitioned tables"));
 			}
+
+			// store array of foreign partitions
+			IMDId *foreign_server_mdid = nullptr;
+			if (IMDRelation::ErelstorageForeign ==
+				partrel->RetrieveRelStorageType())
+			{
+				foreign_server_mdid = partrel->ForeignServer();
+				foreign_server_mdid->AddRef();
+			}
+			else
+			{
+				// not foreign, store as invalid mdid
+				foreign_server_mdid =
+					GPOS_NEW(m_mp) CMDIdGPDB(CMDIdGPDB::m_mdid_invalid_key);
+			}
+			foreign_server_mdids->Append(foreign_server_mdid);
 		}
 
 		// generate a part index id
 		ULONG part_idx_id = COptCtxt::PoctxtFromTLS()->UlPartIndexNextVal();
 		partition_mdids->AddRef();
-		popGet = GPOS_NEW(m_mp) CLogicalDynamicGet(
-			m_mp, pname, ptabdesc, part_idx_id, partition_mdids);
+		popGet = GPOS_NEW(m_mp)
+			CLogicalDynamicGet(m_mp, pname, ptabdesc, part_idx_id,
+							   partition_mdids, foreign_server_mdids);
 		CLogicalDynamicGet *popDynamicGet =
 			CLogicalDynamicGet::PopConvert(popGet);
 
@@ -2120,7 +2139,7 @@ CTranslatorDXLToExpr::Ptabdesc(CDXLTableDescr *table_descr)
 	CTableDescriptor *ptabdesc = GPOS_NEW(m_mp) CTableDescriptor(
 		m_mp, mdid, CName(m_mp, &strName), pmdrel->ConvertHashToRandom(),
 		rel_distr_policy, rel_storage_type, table_descr->GetExecuteAsUserId(),
-		table_descr->LockMode());
+		table_descr->LockMode(), table_descr->GetAssignedQueryIdForTargetRel());
 
 	const ULONG ulColumns = table_descr->Arity();
 	for (ULONG ul = 0; ul < ulColumns; ul++)
@@ -2318,9 +2337,9 @@ CTranslatorDXLToExpr::PtabdescFromCTAS(CDXLLogicalCTAS *pdxlopCTAS)
 	CTableDescriptor *ptabdesc = GPOS_NEW(m_mp) CTableDescriptor(
 		m_mp, mdid, CName(m_mp, &strName), pmdrel->ConvertHashToRandom(),
 		rel_distr_policy, rel_storage_type,
-		0,	// TODO:  - Mar 5, 2014; ulExecuteAsUser
-		-1	// GPDB_12_MERGE_FIXME: Extract the lockmode from CTE
-	);
+		0,	// ulExecuteAsUser, use permissions of current user
+		3,	// CTEs always use a RowExclusiveLock on the table. See createas.c
+		UNASSIGNED_QUERYID);
 
 	// populate column information from the dxl table descriptor
 	CDXLColDescrArray *dxl_col_descr_array =
@@ -3190,7 +3209,7 @@ CTranslatorDXLToExpr::PexprAggFunc(const CDXLNode *pdxlnAggref)
 		GPOS_NEW(m_mp)
 			CWStringConst(m_mp, (pmdagg->Mdname().GetMDName())->GetBuffer()),
 		dxl_op->IsDistinct(), agg_func_stage, fSplit, resolved_return_type_mdid,
-		agg_func_kind, dxl_op->GetArgTypes());
+		agg_func_kind, dxl_op->GetArgTypes(), pmdagg->IsAggRepSafe());
 
 	CExpression *pexprAggFunc = nullptr;
 

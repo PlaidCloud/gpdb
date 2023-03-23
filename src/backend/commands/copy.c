@@ -33,6 +33,7 @@
 #include "catalog/pg_type.h"
 #include "commands/copy.h"
 #include "commands/defrem.h"
+#include "commands/progress.h"
 #include "commands/trigger.h"
 #include "executor/execPartition.h"
 #include "executor/executor.h"
@@ -49,11 +50,13 @@
 #include "parser/parse_collate.h"
 #include "parser/parse_expr.h"
 #include "parser/parse_relation.h"
+#include "pgstat.h"
 #include "port/pg_bswap.h"
 #include "rewrite/rewriteHandler.h"
 #include "storage/fd.h"
 #include "storage/execute_pipe.h"
 #include "tcop/tcopprot.h"
+#include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -642,6 +645,10 @@ CopySendEndOfRow(CopyState cstate)
 			return; /* don't want to reset msgbuf quite yet */
 	}
 
+	/* Update the progress */
+	cstate->bytes_processed += cstate->fe_msgbuf->len;
+	pgstat_progress_update_param(PROGRESS_COPY_BYTES_PROCESSED, cstate->bytes_processed);
+
 	resetStringInfo(fe_msgbuf);
 }
 
@@ -947,6 +954,8 @@ CopyLoadRawBuf(CopyState cstate)
 	cstate->raw_buf[nbytes] = '\0';
 	cstate->raw_buf_index = 0;
 	cstate->raw_buf_len = nbytes;
+	cstate->bytes_processed += nbytes;
+	pgstat_progress_update_param(PROGRESS_COPY_BYTES_PROCESSED, cstate->bytes_processed);
 	return (inbytes > 0);
 }
 
@@ -1371,7 +1380,10 @@ DoCopy(ParseState *pstate, const CopyStmt *stmt,
 
 	/* Issue automatic ANALYZE if conditions are satisfied (MPP-4082). */
 	if (Gp_role == GP_ROLE_DISPATCH && is_from)
-		auto_stats(AUTOSTATS_CMDTYPE_COPY, relid, *processed, false /* inFunction */);
+	{
+		bool inFunction = already_under_executor_run() || utility_nested();
+		auto_stats(AUTOSTATS_CMDTYPE_COPY, relid, *processed, inFunction);
+	}
 }
 
 /*
@@ -2362,6 +2374,8 @@ EndCopy(CopyState cstate)
 	if (cstate->cdbsreh)
 		destroyCdbSreh(cstate->cdbsreh);
 
+	pgstat_progress_end_command();
+
 	MemoryContextDelete(cstate->copycontext);
 	pfree(cstate);
 }
@@ -2547,6 +2561,14 @@ BeginCopyTo(ParseState *pstate,
 {
 	CopyState	cstate;
 	MemoryContext oldcontext;
+	const int	progress_cols[] = {
+		PROGRESS_COPY_COMMAND,
+		PROGRESS_COPY_TYPE
+	};
+	int64		progress_vals[] = {
+		PROGRESS_COPY_COMMAND_TO,
+		0
+	};
 
 	if (rel != NULL && rel->rd_rel->relkind != RELKIND_RELATION)
 	{
@@ -2616,6 +2638,7 @@ BeginCopyTo(ParseState *pstate,
 	}
 	else if (pipe)
 	{
+		progress_vals[1] = PROGRESS_COPY_TYPE_PIPE;
 		Assert(!is_program || Gp_role == GP_ROLE_EXECUTE);	/* the grammar does not allow this */
 		if (whereToSendOutput != DestRemote)
 			cstate->copy_file = stdout;
@@ -2631,6 +2654,7 @@ BeginCopyTo(ParseState *pstate,
 
 		if (is_program)
 		{
+			progress_vals[1] = PROGRESS_COPY_TYPE_PROGRAM;
 			cstate->program_pipes = open_program_pipes(cstate->filename, true);
 			cstate->copy_file = fdopen(cstate->program_pipes->pipes[0], PG_BINARY_W);
 
@@ -2644,6 +2668,8 @@ BeginCopyTo(ParseState *pstate,
 		{
 			mode_t oumask; /* Pre-existing umask value */
 			struct stat st;
+
+			progress_vals[1] = PROGRESS_COPY_TYPE_FILE;
 
 			/*
 			 * Prevent write to relative path ... too easy to shoot oneself in
@@ -2695,6 +2721,13 @@ BeginCopyTo(ParseState *pstate,
 								errmsg("\"%s\" is a directory", filename)));
 		}
 	}
+
+	/* initialize progress */
+	pgstat_progress_start_command(PROGRESS_COMMAND_COPY,
+								  cstate->rel ? RelationGetRelid(cstate->rel) : InvalidOid);
+	pgstat_progress_update_multi_param(2, progress_cols, progress_vals);
+
+	cstate->bytes_processed = 0;
 
 	MemoryContextSwitchTo(oldcontext);
 
@@ -3018,6 +3051,7 @@ CopyTo(CopyState cstate)
 	int			num_phys_attrs;
 	ListCell   *cur;
 	uint64		processed = 0;
+	bool *proj = NULL;
 
 	if (cstate->rel)
 		tupDesc = RelationGetDescr(cstate->rel);
@@ -3031,9 +3065,12 @@ CopyTo(CopyState cstate)
 
 	/* Get info about the columns we need to process. */
 	cstate->out_functions = (FmgrInfo *) palloc(num_phys_attrs * sizeof(FmgrInfo));
+
+	proj = palloc0(sizeof(bool) * num_phys_attrs);
 	foreach(cur, cstate->attnumlist)
 	{
 		int			attnum = lfirst_int(cur);
+		proj[attnum-1] = true;
 		Oid			out_func_oid;
 		bool		isvarlena;
 		Form_pg_attribute attr = TupleDescAttr(tupDesc, attnum - 1);
@@ -3120,7 +3157,7 @@ CopyTo(CopyState cstate)
 		TupleTableSlot *slot;
 		TableScanDesc scandesc;
 
-		scandesc = table_beginscan(cstate->rel, GetActiveSnapshot(), 0, NULL);
+		scandesc = table_beginscan_es(cstate->rel, GetActiveSnapshot(), 0, NULL, proj, NULL);
 		slot = table_slot_create(cstate->rel, NULL);
 
 		processed = 0;
@@ -3133,7 +3170,13 @@ CopyTo(CopyState cstate)
 
 			/* Format and send the data */
 			CopyOneRowTo(cstate, slot);
-			processed++;
+
+			/*
+			 * Increment the number of processed tuples, and report the
+			 * progress.
+			 */
+			pgstat_progress_update_param(PROGRESS_COPY_TUPLES_PROCESSED,
+										 ++processed);
 		}
 
 		ExecDropSingleTupleTableSlot(slot);
@@ -3760,7 +3803,8 @@ CopyFrom(CopyState cstate)
 	BulkInsertState bistate = NULL;
 	CopyInsertMethod insertMethod;
 	CopyMultiInsertInfo multiInsertInfo = {0};	/* pacify compiler */
-	uint64		processed = 0;
+	int64		processed = 0;
+	int64		excluded = 0;
 	bool		has_before_insert_row_trig;
 	bool		has_instead_insert_row_trig;
 	bool		leafpart_use_multi_insert = false;
@@ -4299,7 +4343,15 @@ CopyFrom(CopyState cstate)
 			econtext->ecxt_scantuple = myslot;
 			/* Skip items that don't match COPY's WHERE clause */
 			if (!ExecQual(cstate->qualexpr, econtext))
+			{
+				/*
+				 * Report that this tuple was filtered out by the WHERE
+				 * clause.
+				 */
+				pgstat_progress_update_param(PROGRESS_COPY_TUPLES_EXCLUDED,
+											 ++excluded);
 				continue;
+			}
 		}
 
 		if (cstate->dispatch_mode != COPY_DISPATCH && is_check_distkey)
@@ -4629,13 +4681,15 @@ CopyFrom(CopyState cstate)
 			/*
 			 * We count only tuples not suppressed by a BEFORE INSERT trigger
 			 * or FDW; this is the same definition used by nodeModifyTable.c
-			 * for counting tuples inserted by an INSERT command.
+			 * for counting tuples inserted by an INSERT command. Update
+			 * progress of the COPY command as well.
 			 *
 			 * MPP: incrementing this counter here only matters for utility
 			 * mode. in dispatch mode only the dispatcher COPY collects row
 			 * count, so this counter is meaningless.
 			 */
-			processed++;
+			pgstat_progress_update_param(PROGRESS_COPY_TUPLES_PROCESSED,
+										 ++processed);
 			if (cstate->cdbsreh)
 				cstate->cdbsreh->processed++;
 		}
@@ -4802,6 +4856,16 @@ BeginCopyFrom(ParseState *pstate,
 	ExprState **defexprs;
 	MemoryContext oldcontext;
 	bool		volatile_defexprs;
+	const int	progress_cols[] = {
+		PROGRESS_COPY_COMMAND,
+		PROGRESS_COPY_TYPE,
+		PROGRESS_COPY_BYTES_TOTAL
+	};
+	int64		progress_vals[] = {
+		PROGRESS_COPY_COMMAND_FROM,
+		0,
+		0
+	};
 
 	cstate = BeginCopy(pstate, true, rel, NULL, InvalidOid, attnamelist, options, NULL);
 	oldcontext = MemoryContextSwitchTo(cstate->copycontext);
@@ -4815,6 +4879,14 @@ BeginCopyFrom(ParseState *pstate,
 			 cstate->rel && cstate->rel->rd_cdbpolicy &&
 			 cstate->rel->rd_cdbpolicy->ptype != POLICYTYPE_ENTRY)
 		cstate->dispatch_mode = COPY_DISPATCH;
+	/*
+	 * Handle case where fdw executes on coordinator while it's acting as a segment
+	 * This occurs when fdw is under a redistribute on the coordinator
+	 */
+	else if (Gp_role == GP_ROLE_EXECUTE &&
+			 cstate->rel && cstate->rel->rd_cdbpolicy &&
+			 cstate->rel->rd_cdbpolicy->ptype == POLICYTYPE_ENTRY)
+		cstate->dispatch_mode = COPY_DIRECT;
 	else if (Gp_role == GP_ROLE_EXECUTE)
 		cstate->dispatch_mode = COPY_EXECUTOR;
 	else
@@ -4911,6 +4983,11 @@ BeginCopyFrom(ParseState *pstate,
 		}
 	}
 
+	/* initialize progress */
+	pgstat_progress_start_command(PROGRESS_COMMAND_COPY,
+								  cstate->rel ? RelationGetRelid(cstate->rel) : InvalidOid);
+	cstate->bytes_processed = 0;
+
 	/* We keep those variables in cstate. */
 	cstate->in_functions = in_functions;
 	cstate->typioparams = typioparams;
@@ -4933,12 +5010,14 @@ BeginCopyFrom(ParseState *pstate,
 	}
 	else if (data_source_cb)
 	{
+		progress_vals[1] = PROGRESS_COPY_TYPE_CALLBACK;
 		cstate->copy_dest = COPY_CALLBACK;
 		cstate->data_source_cb = data_source_cb;
 		cstate->data_source_cb_extra = data_source_cb_extra;
 	}
 	else if (pipe)
 	{
+		progress_vals[1] = PROGRESS_COPY_TYPE_PIPE;
 		Assert(!is_program || cstate->dispatch_mode == COPY_EXECUTOR);	/* the grammar does not allow this */
 		if (whereToSendOutput == DestRemote)
 			ReceiveCopyBegin(cstate);
@@ -4954,6 +5033,7 @@ BeginCopyFrom(ParseState *pstate,
 
 		if (cstate->is_program)
 		{
+			progress_vals[1] = PROGRESS_COPY_TYPE_PROGRAM;
 			cstate->program_pipes = open_program_pipes(cstate->filename, false);
 			cstate->copy_file = fdopen(cstate->program_pipes->pipes[0], PG_BINARY_R);
 			if (cstate->copy_file == NULL)
@@ -4967,6 +5047,7 @@ BeginCopyFrom(ParseState *pstate,
 			struct stat st;
 			char	   *filename = cstate->filename;
 
+			progress_vals[1] = PROGRESS_COPY_TYPE_FILE;
 			cstate->copy_file = AllocateFile(filename, PG_BINARY_R);
 			if (cstate->copy_file == NULL)
 			{
@@ -4995,8 +5076,12 @@ BeginCopyFrom(ParseState *pstate,
 				ereport(ERROR,
 						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 						 errmsg("\"%s\" is a directory", filename)));
+
+			progress_vals[2] = st.st_size;
 		}
 	}
+
+	pgstat_progress_update_multi_param(3, progress_cols, progress_vals);
 
 	if (cstate->on_segment && Gp_role == GP_ROLE_DISPATCH)
 	{
@@ -6079,6 +6164,18 @@ void
 EndCopyFrom(CopyState cstate)
 {
 	/* No COPY FROM related resources except memory. */
+
+	/*
+	 * We call pgstat_progress_end_command here even EndCopy does 
+	 * the same because we want to be consistent with upstream.
+	 * The upstream does that because it doesn't call EndCopy in 
+	 * EndCopyFrom, and that's what GPDB would do when we merge with
+	 * PG14. So calling it here in case we miss it when that happens.
+	 * The second call of it should just be a no-op.
+	 *
+	 * GPDB_14_MERGE_FIXME: remove this comment. 
+	 */
+	pgstat_progress_end_command();
 
 	EndCopy(cstate);
 }
@@ -7594,7 +7691,10 @@ copy_dest_receive(TupleTableSlot *slot, DestReceiver *self)
 
 	/* Send the data */
 	CopyOneRowTo(cstate, slot);
-	myState->processed++;
+
+	/* Increment the number of processed tuples, and report the progress */
+	pgstat_progress_update_param(PROGRESS_COPY_TUPLES_PROCESSED,
+								 ++myState->processed);
 
 	return true;
 }

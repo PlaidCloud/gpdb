@@ -20,8 +20,8 @@
 #include "access/multixact.h"
 #include "access/tableam.h"
 #include "access/xact.h"
+#include "catalog/aoseg.h"
 #include "catalog/catalog.h"
-#include "catalog/gp_fastsequence.h"
 #include "catalog/heap.h"
 #include "catalog/index.h"
 #include "catalog/pg_appendonly.h"
@@ -524,34 +524,35 @@ extractcolumns_from_node(Node *expr, bool *cols, AttrNumber natts)
 
 static TableScanDesc
 aoco_beginscan_extractcolumns(Relation rel, Snapshot snapshot,
-							  List *targetlist, List *qual,
-							  uint32 flags)
+							  List *targetlist, List *qual, bool *proj,
+							  List* constraintList, uint32 flags)
 {
 	AOCSScanDesc	aoscan;
-	AttrNumber		natts = RelationGetNumberOfAttributes(rel);
-	bool		   *cols;
-	bool			found = false;
 
-	cols = palloc0(natts * sizeof(*cols));
+	AssertImply(list_length(targetlist) || list_length(qual) || list_length(constraintList), !proj);
 
-	found |= extractcolumns_from_node((Node *)targetlist, cols, natts);
-	found |= extractcolumns_from_node((Node *)qual, cols, natts);
-
-	/*
-	 * In some cases (for example, count(*)), targetlist and qual may be null,
-	 * extractcolumns_walker will return immediately, so no columns are specified.
-	 * We always scan the first column.
-	 */
-	if (!found)
-		cols[0] = true;
-
+	if (!proj)
+	{
+		AttrNumber		natts = RelationGetNumberOfAttributes(rel);
+		bool			found = false;
+		proj = palloc0(sizeof(bool*) * natts);
+		found |= extractcolumns_from_node((Node *)targetlist, proj, natts);
+		found |= extractcolumns_from_node((Node *)qual, proj, natts);
+		found |= extractcolumns_from_node((Node *)constraintList, proj, natts);
+		/*
+		* In some cases (for example, count(*)), targetlist and qual may be null,
+		* extractcolumns_walker will return immediately, so no columns are specified.
+		* We always scan the first column.
+		*/
+		if (!found)
+			proj[0] = true;
+	}
 	aoscan = aocs_beginscan(rel,
 							snapshot,
-							cols,
+							proj,
 							flags);
 
-	pfree(cols);
-
+	pfree(proj);
 	return (TableScanDesc)aoscan;
 }
 
@@ -1254,7 +1255,6 @@ heap_truncate_one_relid(Oid relid)
 static void
 aoco_relation_nontransactional_truncate(Relation rel)
 {
-	Oid			ao_base_relid = RelationGetRelid(rel);
 	Oid			aoseg_relid = InvalidOid;
 	Oid			aoblkdir_relid = InvalidOid;
 	Oid			aovisimap_relid = InvalidOid;
@@ -1262,10 +1262,10 @@ aoco_relation_nontransactional_truncate(Relation rel)
 	ao_truncate_one_rel(rel);
 
 	/* Also truncate the aux tables */
-	GetAppendOnlyEntryAuxOids(ao_base_relid, NULL,
+	GetAppendOnlyEntryAuxOids(rel,
 	                          &aoseg_relid,
-	                          &aoblkdir_relid, NULL,
-	                          &aovisimap_relid, NULL);
+	                          &aoblkdir_relid,
+	                          &aovisimap_relid);
 
 	heap_truncate_one_relid(aoseg_relid);
 	heap_truncate_one_relid(aoblkdir_relid);
@@ -1323,8 +1323,10 @@ aoco_vacuum_rel(Relation onerel, VacuumParams *params,
                       BufferAccessStrategy bstrategy)
 {
 	/*
-	 * Implemented but not invoked, we do the AO_COLUMN different phases vacuuming by
-	 * calling ao_vacuum_rel() in vacuum_rel() directly for now.
+	 * We VACUUM an AO_COLUMN table through multiple phases. vacuum_rel()
+	 * orchestrates the phases and calls itself again for each phase, so we
+	 * get here for every phase. ao_vacuum_rel() is a wrapper of dedicated
+	 * ao_vacuum_rel_*() functions for the specific phases.
 	 */
 	ao_vacuum_rel(onerel, params, bstrategy);
 
@@ -1356,6 +1358,7 @@ aoco_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	int						write_seg_no;
 	AOCSScanDesc			scan = NULL;
 	TupleTableSlot		   *slot;
+	double					n_tuples_written = 0;
 
 	pg_rusage_init(&ru0);
 
@@ -1448,11 +1451,31 @@ aoco_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 						  NULL /* proj */,
 						  0 /* flags */);
 
+	/* Report cluster progress */
+	{
+		FileSegTotals *fstotal;
+		const int	prog_index[] = {
+			PROGRESS_CLUSTER_PHASE,
+			PROGRESS_CLUSTER_TOTAL_HEAP_BLKS,
+		};
+		int64		prog_val[2];
+
+		fstotal = GetAOCSSSegFilesTotals(OldHeap, GetActiveSnapshot());
+
+		/* Set phase and total heap-size blocks to columns */
+		prog_val[0] = PROGRESS_CLUSTER_PHASE_SEQ_SCAN_AO;
+		prog_val[1] = RelationGuessNumberOfBlocksFromSize(fstotal->totalbytes);
+		pgstat_progress_update_multi_param(2, prog_index, prog_val);
+	}
+	SIMPLE_FAULT_INJECTOR("cluster_ao_seq_scan_begin");
+
 	while (aocs_getnext(scan, ForwardScanDirection, slot))
 	{
 		Datum	   *slot_values;
 		bool	   *slot_isnull;
 		HeapTuple   tuple;
+		BlockNumber	curr_heap_blks = 0;
+		BlockNumber	prev_heap_blks = 0;
 		CHECK_FOR_INTERRUPTS();
 
 		slot_getallattrs(slot);
@@ -1462,6 +1485,16 @@ aoco_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 		tuple = heap_form_tuple(oldTupDesc, slot_values, slot_isnull);
 
 		*num_tuples += 1;
+		pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_TUPLES_SCANNED,
+									 *num_tuples);
+		curr_heap_blks = RelationGuessNumberOfBlocksFromSize(scan->totalBytesRead);
+		if (curr_heap_blks != prev_heap_blks)
+		{
+			pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_BLKS_SCANNED,
+										 curr_heap_blks);
+			prev_heap_blks = curr_heap_blks;
+		}
+		SIMPLE_FAULT_INJECTOR("cluster_ao_scanning_tuples");
 		tuplesort_putheaptuple(tuplesort, tuple);
 		heap_freetuple(tuple);
 	}
@@ -1469,14 +1502,19 @@ aoco_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 	ExecDropSingleTupleTableSlot(slot);
 	aocs_endscan(scan);
 
+	/* Report that we are now sorting tuples */
+	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
+								 PROGRESS_CLUSTER_PHASE_SORT_TUPLES);
+	SIMPLE_FAULT_INJECTOR("cluster_ao_sorting_tuples");
+	tuplesort_performsort(tuplesort);
 
 	/*
-	 * Сomplete the sort, then read out all tuples
-	 * from the tuplestore and write them to the new relation.
+	 * Report that we are now reading out all tuples from the tuplestore
+	 * and write them to the new relation.
 	 */
-
-	tuplesort_performsort(tuplesort);
-	
+	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
+								 PROGRESS_CLUSTER_PHASE_WRITE_NEW_AO);
+	SIMPLE_FAULT_INJECTOR("cluster_ao_write_begin");
 	write_seg_no = ChooseSegnoForWrite(NewHeap);
 
 	idesc = aocs_insert_init(NewHeap, write_seg_no, (int64) *num_tuples);
@@ -1494,6 +1532,9 @@ aoco_relation_copy_for_cluster(Relation OldHeap, Relation NewHeap,
 
 		heap_deform_tuple(tuple, oldTupDesc, values, isnull);
 		aocs_insert_values(idesc, values, isnull, &aoTupleId);
+		pgstat_progress_update_param(PROGRESS_CLUSTER_HEAP_TUPLES_WRITTEN,
+									 ++n_tuples_written);
+		SIMPLE_FAULT_INJECTOR("cluster_ao_writing_tuples");
 	}
 
 	tuplesort_end(tuplesort);
@@ -1569,7 +1610,6 @@ aoco_index_build_range_scan(Relation heapRelation,
 	List	   *tlist = NIL;
 	List	   *qual = indexInfo->ii_Predicate;
 	Oid			blkdirrelid;
-	Oid			blkidxrelid;
 	int64 		previous_blkno = -1;
 
 	/*
@@ -1613,8 +1653,8 @@ aoco_index_build_range_scan(Relation heapRelation,
 	/*
 	 * If block directory is empty, it must also be built along with the index.
 	 */
-	GetAppendOnlyEntryAuxOids(RelationGetRelid(heapRelation), NULL, NULL,
-							  &blkdirrelid, &blkidxrelid, NULL, NULL);
+	GetAppendOnlyEntryAuxOids(heapRelation, NULL,
+							  &blkdirrelid, NULL);
 
 	Relation blkdir = relation_open(blkdirrelid, AccessShareLock);
 
@@ -1670,7 +1710,9 @@ aoco_index_build_range_scan(Relation heapRelation,
 			scan = table_beginscan_es(heapRelation,	/* relation */
 									  snapshot,		/* snapshot */
 									  tlist,		/* targetlist */
-									  qual);		/* qual */
+									  qual,			/* qual */
+									  NULL,			/* constraintList */
+									  NULL);
 		}
 	}
 	else
@@ -1919,6 +1961,66 @@ aoco_relation_size(Relation rel, ForkNumber forkNumber)
 	UnregisterSnapshot(snapshot);
 
 	return totalbytes;
+}
+
+/*
+ * For each AO segment, get the starting heap block number and the number of
+ * heap blocks (together termed as a BlockSequence). The starting heap block
+ * number is always deterministic given a segment number. See AOtupleId.
+ *
+ * The number of heap blocks can be determined from the last row number present
+ * in the segment. See appendonlytid.h for details.
+ */
+static BlockSequence *
+aoco_relation_get_block_sequences(Relation rel, int *numSequences)
+{
+	Snapshot			snapshot;
+	Oid					segrelid;
+	int					nsegs;
+	BlockSequence		*sequences;
+	AOCSFileSegInfo 	**seginfos;
+
+	Assert(RelationIsValid(rel));
+	Assert(numSequences);
+
+	snapshot = RegisterSnapshot(GetCatalogSnapshot(InvalidOid));
+
+	seginfos = GetAllAOCSFileSegInfo(rel, snapshot, &nsegs, &segrelid);
+	sequences = (BlockSequence *) palloc(sizeof(BlockSequence) * nsegs);
+	*numSequences = nsegs;
+
+	/*
+	 * For each aoseg, the sequence starts at a fixed heap block number and
+	 * contains up to the highest numbered heap block corresponding to the
+	 * lastSequence value of that segment.
+	 */
+	for (int i = 0; i < nsegs; i++)
+		AOSegment_PopulateBlockSequence(&sequences[i], segrelid, seginfos[i]->segno);
+
+	UnregisterSnapshot(snapshot);
+
+	if (seginfos != NULL)
+	{
+		FreeAllAOCSSegFileInfo(seginfos, nsegs);
+		pfree(seginfos);
+	}
+
+	return sequences;
+}
+
+/*
+ * Populate the BlockSequence corresponding to the AO segment in which the
+ * logical heap block 'blkNum' falls.
+ */
+static void
+aoco_relation_get_block_sequence(Relation rel,
+								 BlockNumber blkNum,
+								 BlockSequence *sequence)
+{
+	Oid segrelid;
+
+	GetAppendOnlyEntryAuxOids(rel, &segrelid, NULL, NULL);
+	AOSegment_PopulateBlockSequence(sequence, segrelid, AOSegmentGet_segno(blkNum));
 }
 
 static bool
@@ -2178,6 +2280,8 @@ static const TableAmRoutine ao_column_methods = {
 	.index_validate_scan = aoco_index_validate_scan,
 
 	.relation_size = aoco_relation_size,
+	.relation_get_block_sequences = aoco_relation_get_block_sequences,
+	.relation_get_block_sequence = aoco_relation_get_block_sequence,
 	.relation_needs_toast_table = aoco_relation_needs_toast_table,
 
 	.relation_estimate_size = aoco_estimate_rel_size,

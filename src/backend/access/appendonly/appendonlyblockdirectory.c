@@ -17,6 +17,7 @@
 #include "access/xact.h"
 #include "cdb/cdbappendonlyblockdirectory.h"
 #include "catalog/aoblkdir.h"
+#include "catalog/aocatalog.h"
 #include "catalog/pg_appendonly.h"
 #include "access/heapam.h"
 #include "access/genam.h"
@@ -181,11 +182,10 @@ AppendOnlyBlockDirectory_Init_forSearch(
 	Oid blkdiridxid;
 
 	blockDirectory->aoRel = aoRel;
-	GetAppendOnlyEntryAuxOids(aoRel->rd_id, NULL, NULL, &blkdirrelid, &blkdiridxid, NULL, NULL);
+	GetAppendOnlyEntryAuxOids(aoRel, NULL, &blkdirrelid, NULL);
 
 	if (!OidIsValid(blkdirrelid))
 	{
-		Assert(!OidIsValid(blkdiridxid));
 		blockDirectory->blkdirRel = NULL;
 		blockDirectory->blkdirIdx = NULL;
 
@@ -212,6 +212,7 @@ AppendOnlyBlockDirectory_Init_forSearch(
 	blockDirectory->blkdirRel =
 		heap_open(blkdirrelid, AccessShareLock);
 
+	blkdiridxid = AppendonlyGetAuxIndex(blockDirectory->blkdirRel);
 	Assert(OidIsValid(blkdiridxid));
 
 	blockDirectory->blkdirIdx =
@@ -251,17 +252,11 @@ AppendOnlyBlockDirectory_Init_forUniqueChecks(
 	Assert(snapshot->snapshot_type == SNAPSHOT_DIRTY ||
 			snapshot->snapshot_type == SNAPSHOT_SELF);
 
-	GetAppendOnlyEntryAuxOids(aoRel->rd_id,
-							  InvalidSnapshot, /* catalog snapshot is enough */
-							  NULL, &blkdirrelid, &blkdiridxid, NULL, NULL);
+	GetAppendOnlyEntryAuxOids(aoRel,
+							  NULL, &blkdirrelid, NULL);
 
-	if (!OidIsValid(blkdirrelid) || !OidIsValid(blkdiridxid))
+	if (!OidIsValid(blkdirrelid))
 		elog(ERROR, "Could not find block directory for relation: %u", aoRel->rd_id);
-
-	ereportif(Debug_appendonly_print_blockdirectory, LOG,
-			  (errmsg("Append-only block directory init for unique checks"),
-			   errdetail("(aoRel = %u, blkdirrel = %u, blkdiridxrel = %u, numColumnGroups = %d)",
-						 aoRel->rd_id, blkdirrelid, blkdiridxid, numColumnGroups)));
 
 	blockDirectory->aoRel = aoRel;
 	blockDirectory->isAOCol = RelationIsAoCols(aoRel);
@@ -278,6 +273,15 @@ AppendOnlyBlockDirectory_Init_forUniqueChecks(
 	blockDirectory->proj = NULL;
 
 	blockDirectory->blkdirRel = heap_open(blkdirrelid, AccessShareLock);
+
+	blkdiridxid = AppendonlyGetAuxIndex(blockDirectory->blkdirRel);
+	Assert(OidIsValid(blkdiridxid));
+
+	ereportif(Debug_appendonly_print_blockdirectory, LOG,
+			  (errmsg("Append-only block directory init for unique checks"),
+			   errdetail("(aoRel = %u, blkdirrel = %u, blkdiridxrel = %u, numColumnGroups = %d)",
+						 aoRel->rd_id, blkdirrelid, blkdiridxid, numColumnGroups)));
+
 	blockDirectory->blkdirIdx = index_open(blkdiridxid, AccessShareLock);
 
 	init_internal(blockDirectory);
@@ -310,11 +314,10 @@ AppendOnlyBlockDirectory_Init_forInsert(
 	blockDirectory->aoRel = aoRel;
 	blockDirectory->appendOnlyMetaDataSnapshot = appendOnlyMetaDataSnapshot;
 
-	GetAppendOnlyEntryAuxOids(aoRel->rd_id, NULL, NULL, &blkdirrelid, &blkdiridxid, NULL, NULL);
+	GetAppendOnlyEntryAuxOids(aoRel, NULL, &blkdirrelid, NULL);
 
 	if (!OidIsValid(blkdirrelid))
 	{
-		Assert(!OidIsValid(blkdiridxid));
 		blockDirectory->blkdirRel = NULL;
 		blockDirectory->blkdirIdx = NULL;
 
@@ -335,6 +338,7 @@ AppendOnlyBlockDirectory_Init_forInsert(
 	blockDirectory->blkdirRel =
 		heap_open(blkdirrelid, RowExclusiveLock);
 
+	blkdiridxid = AppendonlyGetAuxIndex(blockDirectory->blkdirRel);
 	Assert(OidIsValid(blkdiridxid));
 
 	blockDirectory->blkdirIdx =
@@ -379,11 +383,10 @@ AppendOnlyBlockDirectory_Init_addCol(
 	blockDirectory->aoRel = aoRel;
 	blockDirectory->appendOnlyMetaDataSnapshot = appendOnlyMetaDataSnapshot;
 
-	GetAppendOnlyEntryAuxOids(aoRel->rd_id, NULL, NULL, &blkdirrelid, &blkdiridxid, NULL, NULL);
+	GetAppendOnlyEntryAuxOids(aoRel, NULL, &blkdirrelid, NULL);
 
 	if (!OidIsValid(blkdirrelid))
 	{
-		Assert(!OidIsValid(blkdiridxid));
 		blockDirectory->blkdirRel = NULL;
 		blockDirectory->blkdirIdx = NULL;
 		blockDirectory->numColumnGroups = 0;
@@ -411,6 +414,7 @@ AppendOnlyBlockDirectory_Init_addCol(
 	blockDirectory->blkdirRel =
 		heap_open(blkdirrelid, RowExclusiveLock);
 
+	blkdiridxid = AppendonlyGetAuxIndex(blockDirectory->blkdirRel);
 	Assert(OidIsValid(blkdiridxid));
 
 	blockDirectory->blkdirIdx =
@@ -1035,13 +1039,16 @@ AppendOnlyBlockDirectory_DeleteSegmentFile(Relation aoRel,
 	Oid blkdirrelid;
 	Oid blkdiridxid;
 
-	GetAppendOnlyEntryAuxOids(aoRel->rd_id, NULL, NULL, &blkdirrelid, &blkdiridxid, NULL, NULL);
+	GetAppendOnlyEntryAuxOids(aoRel, NULL, &blkdirrelid, NULL);
 
 	Assert(OidIsValid(blkdirrelid));
-	Assert(OidIsValid(blkdiridxid));
 
 	Relation	blkdirRel = table_open(blkdirrelid, RowExclusiveLock);
+
+	blkdiridxid = AppendonlyGetAuxIndex(blkdirRel);
+	Assert(OidIsValid(blkdiridxid));
 	Relation	blkdirIdx = index_open(blkdiridxid, RowExclusiveLock);
+
 	ScanKeyData scanKey;
 	SysScanDesc indexScan;
 	HeapTuple	tuple;

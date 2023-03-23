@@ -978,13 +978,14 @@
         </dxl:DistrOpfamilies>
       </dxl:Relation>
       <dxl:RelationExtendedStatistics Mdid="10.434199.1.0" Name="t">
-        <dxl:ExtendedStatisticsInfo Oid="434202" Name="stts" Keys="1,2" Kind="FunctionalDependencies"/>
+        <dxl:ExtendedStatisticsInfo Oid="434202" Name="stts" Keys="1,2" Kind="MVDependency"/>
       </dxl:RelationExtendedStatistics>
       <dxl:ExtendedStatistics Mdid="9.434202.1.0" Name="stts">
         <dxl:MVDependencyList>
           <dxl:MVDependency Degree="0.989901" From="1" To="2"/>
           <dxl:MVDependency Degree="0.989901" From="2" To="1"/>
         </dxl:MVDependencyList>
+        <dxl:MVNDistinctList/>
       </dxl:ExtendedStatistics>
       <dxl:MDCast Mdid="3.23.1.0;23.1.0" Name="int4" BinaryCoercible="true" SourceTypeId="0.23.1.0" DestinationTypeId="0.23.1.0" CastFuncId="0.0.0.0" CoercePathType="0"/>
       <dxl:GPDBScalarOp Mdid="0.96.1.0" Name="=" ComparisonType="Eq" ReturnsNullOnNullInput="true" IsNDVPreserving="false">

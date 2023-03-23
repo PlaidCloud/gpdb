@@ -252,7 +252,7 @@ SetNextFileSegForRead(AppendOnlyScanDesc scan)
 		return false;
 	}
 
-	MakeAOSegmentFileName(reln, segno, -1, &fileSegNo, scan->aos_filenamepath);
+	MakeAOSegmentFileName(reln, segno, InvalidFileNumber, &fileSegNo, scan->aos_filenamepath);
 	Assert(strlen(scan->aos_filenamepath) + 1 <= scan->aos_filenamepath_maxlen);
 
 	Assert(scan->initedStorageRoutines);
@@ -326,7 +326,7 @@ SetCurrentFileSegForWrite(AppendOnlyInsertDesc aoInsertDesc)
 
 	/* Make the 'segment' file name */
 	MakeAOSegmentFileName(aoInsertDesc->aoi_rel,
-						  aoInsertDesc->cur_segno, -1,
+						  aoInsertDesc->cur_segno, InvalidFileNumber,
 						  &fileSegNo,
 						  aoInsertDesc->appendFilePathName);
 	Assert(strlen(aoInsertDesc->appendFilePathName) + 1 <= aoInsertDesc->appendFilePathNameMaxLen);
@@ -776,7 +776,7 @@ AppendOnlyExecutorReadBlock_ProcessTuple(AppendOnlyExecutorReadBlock *executorRe
 	AOTupleId  *aoTupleId = (AOTupleId *) &fake_ctid;
 	int			formatVersion = executorReadBlock->storageRead->formatVersion;
 
-	AORelationVersion_CheckValid(formatVersion);
+	AOSegfileFormatVersion_CheckValid(formatVersion);
 
 	AOTupleIdInit(aoTupleId, executorReadBlock->segmentFileNum, rowNum);
 
@@ -1387,14 +1387,12 @@ appendonly_beginrangescan_internal(Relation relation,
 	if (segfile_count > 0)
 	{
 		Oid			visimaprelid;
-		Oid			visimapidxid;
 
-		GetAppendOnlyEntryAuxOids(relation->rd_id, NULL,
-								  NULL, NULL, NULL, &visimaprelid, &visimapidxid);
+		GetAppendOnlyEntryAuxOids(relation,
+								  NULL, NULL, &visimaprelid);
 
 		AppendOnlyVisimap_Init(&scan->visibilityMap,
 							   visimaprelid,
-							   visimapidxid,
 							   AccessShareLock,
 							   appendOnlyMetaDataSnapshot);
 	}
@@ -1650,7 +1648,7 @@ openFetchSegmentFile(AppendOnlyFetchDesc aoFetchDesc,
 
 	MakeAOSegmentFileName(
 						  aoFetchDesc->relation,
-						  openSegmentFileNum, -1,
+						  openSegmentFileNum, InvalidFileNumber,
 						  &fileSegNo,
 						  aoFetchDesc->segmentFileName);
 	Assert(strlen(aoFetchDesc->segmentFileName) + 1 <=
@@ -1719,7 +1717,6 @@ fetchFromCurrentBlock(AppendOnlyFetchDesc aoFetchDesc,
 	bool							fetched;
 	AOFetchBlockMetadata 			*currentBlock = &aoFetchDesc->currentBlock;
 	AppendOnlyExecutorReadBlock 	*executorReadBlock = &aoFetchDesc->executorReadBlock;
-	AppendOnlyStorageRead			*storageRead = &aoFetchDesc->storageRead;
 	AppendOnlyBlockDirectoryEntry 	*entry = &currentBlock->blockDirectoryEntry;
 
 	if (!currentBlock->gotContents)
@@ -1744,10 +1741,10 @@ fetchFromCurrentBlock(AppendOnlyFetchDesc aoFetchDesc,
 			/*
 			 * We fell into a hole inside the resolved block directory entry
 			 * we obtained from AppendOnlyBlockDirectory_GetEntry().
-			 * This should not be happening for versions >= PG12. Scream
+			 * This should not be happening for versions >= GP7. Scream
 			 * appropriately. See AppendOnlyBlockDirectoryEntry for details.
 			 */
-			ereportif(storageRead->formatVersion >= AORelationVersion_PG12,
+			ereportif(aoFetchDesc->relation->rd_appendonly->version >= AORelationVersion_GP7,
 					  ERROR,
 					  (errcode(ERRCODE_INTERNAL_ERROR),
 						  errmsg("tuple with row number %ld not found in block directory entry range", rowNum),
@@ -1921,7 +1918,7 @@ appendonly_fetch_init(Relation relation,
 	FormData_pg_appendonly			aoFormData;
 	int								segno;
 
-	GetAppendOnlyEntry(relation->rd_id, &aoFormData);
+	GetAppendOnlyEntry(relation, &aoFormData);
 
 	/*
 	 * increment relation ref count while scanning relation
@@ -2055,7 +2052,6 @@ appendonly_fetch_init(Relation relation,
 
 	AppendOnlyVisimap_Init(&aoFetchDesc->visibilityMap,
 						   aoFormData.visimaprelid,
-						   aoFormData.visimapidxid,
 						   AccessShareLock,
 						   appendOnlyMetaDataSnapshot);
 
@@ -2328,9 +2324,8 @@ appendonly_delete_init(Relation rel)
 	Assert(!IsolationUsesXactSnapshot());
 
 	Oid visimaprelid;
-	Oid visimapidxid;
 
-	GetAppendOnlyEntryAuxOids(rel->rd_id, NULL, NULL, NULL, NULL, &visimaprelid, &visimapidxid);
+	GetAppendOnlyEntryAuxOids(rel, NULL, NULL, &visimaprelid);
 
 	AppendOnlyDeleteDesc aoDeleteDesc = palloc0(sizeof(AppendOnlyDeleteDescData));
 
@@ -2339,7 +2334,6 @@ appendonly_delete_init(Relation rel)
 
 	AppendOnlyVisimap_Init(&aoDeleteDesc->visibilityMap,
 						   visimaprelid,
-						   visimapidxid,
 						   RowExclusiveLock,
 						   aoDeleteDesc->appendOnlyMetaDataSnapshot);
 
@@ -2600,8 +2594,8 @@ appendonly_insert_init(Relation rel, int segno, int64 num_rows)
 	 */
 	Assert(aoInsertDesc->fsInfo->segno == segno);
 
-	GetAppendOnlyEntryAuxOids(aoInsertDesc->aoi_rel->rd_id, NULL, &aoInsertDesc->segrelid,
-			NULL, NULL, NULL, NULL);
+	GetAppendOnlyEntryAuxOids(aoInsertDesc->aoi_rel, &aoInsertDesc->segrelid,
+			NULL, NULL);
 
 	firstSequence = GetFastSequences(aoInsertDesc->segrelid, segno, num_rows);
 	aoInsertDesc->numSequences = num_rows;
@@ -2833,9 +2827,9 @@ appendonly_insert(AppendOnlyInsertDesc aoInsertDesc,
 	 */
 	if (aoInsertDesc->numSequences == 0)
 	{
-		int64 firstSequence = GetFastSequences(aoInsertDesc->segrelid,
-											   aoInsertDesc->cur_segno,
-											   NUM_FAST_SEQUENCES);
+		int64 firstSequence PG_USED_FOR_ASSERTS_ONLY = GetFastSequences(aoInsertDesc->segrelid,
+																		aoInsertDesc->cur_segno,
+																		NUM_FAST_SEQUENCES);
 
 		Assert(firstSequence == aoInsertDesc->lastSequence + 1);
 		aoInsertDesc->numSequences = NUM_FAST_SEQUENCES;
