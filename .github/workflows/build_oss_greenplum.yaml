@@ -23,7 +23,6 @@ jobs:
           username: _json_key
           password: ${{ secrets.GCR_JSON_KEY }} 
       - name: Build and push
-        # docker build -t gcr.io/plaidcloud-build/auth-service:latest --pull --build-arg PLAID_BUILD_TAG={tag} --no-cache .
         id: docker_build
         uses: docker/build-push-action@v3
         with:
