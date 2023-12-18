@@ -545,6 +545,8 @@ class Rsync(Command):
 
         cmdStr = cmdStr + '-e "ssh -o StrictHostKeyChecking=no" '
 
+        cmdStr = cmdStr + '-e "ssh -o StrictHostKeyChecking=no" '
+
         if srcHost:
             cmd_tokens.append(canonicalize(srcHost) + ":" + srcFile)
         else:
