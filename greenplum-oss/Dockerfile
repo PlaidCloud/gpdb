@@ -12,8 +12,8 @@ RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
 
 # Install gpdb dependencies
 WORKDIR /gpdb_src
-RUN chmod +x gpdb_src/README.ubuntu.bash \
-    && gpdb_src/README.ubuntu.bash
+RUN chmod +x README.ubuntu.bash \
+    && README.ubuntu.bash
 
 # Build gp-xerces
 WORKDIR /
