@@ -25,11 +25,11 @@ RUN ../configure --prefix=/usr/local \
     && make install
 
 # Set up gpadmin user and sysconf stuff
-WORKDIR /gpdb_src
-RUN chmod +x greenplum-oss/sysconf.bash \
-    && greenplum-oss/sysconf.bash
-RUN chmod +x concourse/scripts/setup_gpadmin_user.bash \
-    && concourse/scripts/setup_gpadmin_user.bash
+WORKDIR /
+RUN chmod +x gpdb_src/greenplum-oss/sysconf.bash \
+    && gpdb_src/greenplum-oss/sysconf.bash
+RUN chmod +x gpdb_src/concourse/scripts/setup_gpadmin_user.bash \
+    && gpdb_src/concourse/scripts/setup_gpadmin_user.bash
 
 # Configure build environment to install at /usr/local/gpdb
 RUN ./configure --with-perl --with-python --with-libxml --with-gssapi --prefix=/usr/local/greenplum-db \
