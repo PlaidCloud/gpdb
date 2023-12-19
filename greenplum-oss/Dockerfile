@@ -1,6 +1,5 @@
 FROM ubuntu:18.04
 
-
 COPY ./ /gpdb_src/
 # COPY greenplum-oss/sysconf.bash /gpdb_src/sysconf.bash
 # COPY concourse/ /gpdb_src/concourse/

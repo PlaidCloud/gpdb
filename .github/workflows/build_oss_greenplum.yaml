@@ -33,4 +33,4 @@ jobs:
           file: greenplum-oss/Dockerfile
           build-args: |
             PLAID_BUILD_TAG=${{ steps.docker_tag.outputs.tag }}
-          tags: gcr.io/plaidcloud-build/greenplum-oss:latest,gcr.io/plaidcloud-build/greenplum-oss:${{ github.ref_name }}-${{ github.run_number }}
+          tags: gcr.io/plaidcloud-build/greenplum-oss-v6:latest,gcr.io/plaidcloud-build/greenplum-oss-v6:${{ github.ref_name }}-${{ github.run_number }}
