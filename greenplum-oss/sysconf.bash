@@ -1,50 +1,50 @@
 #!/bin/bash
 
-apt-get update
-apt-get install -y \
-	bison \
-	ccache \
-	cmake \
-	curl \
-	flex \
-	git-core \
-	gcc \
-	g++ \
-	inetutils-ping \
-	krb5-kdc \
-	krb5-admin-server \
-	libapr1-dev \
-	libbz2-dev \
-	libcurl4-gnutls-dev \
-	libevent-dev \
-	libkrb5-dev \
-	libpam-dev \
-	libperl-dev \
-	libreadline-dev \
-	libssl-dev \
-	libxerces-c-dev \
-	libxml2-dev \
-	libyaml-dev \
-	libzstd-dev \
-	locales \
-	net-tools \
-	ninja-build \
-	openssh-client \
-	openssh-server \
-	openssl \
-	pkg-config \
-        python \
-        python-pip \
-        python-psutil \
-        python-pygresql \
-        python-yaml
-	# python3-dev \
-	# python3-pip \
-	# python3-psutil \
-	# python3-pygresql \
-	# python3-yaml \
-        # xerces-c
-	zlib1g-dev
+# apt-get update
+# apt-get install -y \
+# 	bison \
+# 	ccache \
+# 	cmake \
+# 	curl \
+# 	flex \
+# 	git-core \
+# 	gcc \
+# 	g++ \
+# 	inetutils-ping \
+# 	krb5-kdc \
+# 	krb5-admin-server \
+# 	libapr1-dev \
+# 	libbz2-dev \
+# 	libcurl4-gnutls-dev \
+# 	libevent-dev \
+# 	libkrb5-dev \
+# 	libpam-dev \
+# 	libperl-dev \
+# 	libreadline-dev \
+# 	libssl-dev \
+# 	libxerces-c-dev \
+# 	libxml2-dev \
+# 	libyaml-dev \
+# 	libzstd-dev \
+# 	locales \
+# 	net-tools \
+# 	ninja-build \
+# 	openssh-client \
+# 	openssh-server \
+# 	openssl \
+# 	pkg-config \
+#         python \
+#         python-pip \
+#         python-psutil \
+#         python-pygresql \
+#         python-yaml
+# 	# python3-dev \
+# 	# python3-pip \
+# 	# python3-psutil \
+# 	# python3-pygresql \
+# 	# python3-yaml \
+#         # xerces-c
+# 	zlib1g-dev
 
 tee -a /etc/sysctl.conf << EOF
 kernel.shmmax = 5000000000000
