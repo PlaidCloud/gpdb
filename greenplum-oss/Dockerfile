@@ -12,6 +12,7 @@ RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
 
 # Install gpdb dependencies
 WORKDIR /gpdb_src
+RUN ls -lah
 RUN chmod +x README.ubuntu.bash \
     && README.ubuntu.bash
 
