@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN echo "/usr/local/lib" > /etc/ld.so.conf.d/usr-local.conf \
 && ldconfig
 
-RUN ./README.Ubuntu.bash
+RUN ./README.ubuntu.bash
 
 RUN chmod +x gpdb_src/greenplum-oss/sysconf.bash \
 && gpdb_src/greenplum-oss/sysconf.bash
