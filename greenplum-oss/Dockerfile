@@ -21,7 +21,7 @@ RUN git clone --depth 1 --branch v3.1.2-p1 https://github.com/greenplum-db/gp-xe
 RUN mkdir /gp-xerces/build
 WORKDIR /gp-xerces/build
 RUN ../configure --prefix=/usr/local \
-    && make
+    && make \
     && make install
 
 # Set up gpadmin user and sysconf stuff
