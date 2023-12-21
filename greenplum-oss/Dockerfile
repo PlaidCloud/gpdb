@@ -33,7 +33,7 @@ RUN chmod +x gpdb_src/concourse/scripts/setup_gpadmin_user.bash \
 
 # Configure build environment to install at /usr/local/gpdb
 WORKDIR /gpdb_src
-RUN ./configure --with-perl --with-python --with-libxml --with-gssapi --with-openssl --with-uuid --prefix=/usr/local/greenplum-db \
+RUN ./configure --with-perl --with-python --with-libxml --with-gssapi --with-openssl --prefix=/usr/local/greenplum-db \
     && make -j8 \
     && make -j8 install
 
